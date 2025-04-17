@@ -64,7 +64,7 @@ class AreaSeatingScraper:
         self.timed_out = False
 
     async def monitor_tab(self, tab: Page, area_number: int):
-        await tab.evaluate(f"chooseSection({area_number})")
+        await tab.evaluate(f"submitParentFormToSelectSection({area_number})")
 
         # Wait for redirection
         await tab.wait_for_load_state("domcontentloaded")
