@@ -69,3 +69,9 @@ class EventManager:
         self.logger.info("Shutting down...")
         await self.client.aclose()
         await self.playwright.stop()
+
+if __name__ == "__main__":
+    manager = EventManager("https://www.etix.com/ticket/p/78414997/alison-krauss-union-station-featuring-jerry-douglas-redding-redding-civic-auditorium?clickref=1011lArps4TX",
+                           "http://localhost:8000/ingest",
+                           )
+    asyncio.run(manager.run())
