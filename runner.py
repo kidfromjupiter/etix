@@ -1,93 +1,61 @@
-import threading
-import subprocess
-import sys
-import os
-import time
-import traceback
-import queue
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
-
+import asyncio
+import random
+from playwright.async_api import async_playwright
 from logger import setup_logger
 
-@dataclass
-class RunnerConfig:
-    """Configuration for a Runner instance"""
-    id: str
-    script_path: str
-    args: List[str] = None
-    env_vars: Dict[str, str] = None
+class EventManager:
+    def __init__(self, base_url):
+        self.base_url = base_url
+        self.context = None
+        self.page = None
+        self.tabs = []
+        self.logger = setup_logger("EventManager")
 
+    async def init_browser(self):
+        self.logger.info("Launching browser...")
+        self.playwright = await async_playwright().start()
+        browser = await self.playwright.chromium.launch(headless=False)
+        self.context = await browser.new_context()
+        self.page = await self.context.new_page()
+        self.logger.info("Browser launched and context created.")
 
-class Runner(threading.Thread):
-    """Runner class that manages a Puppeteer instance in a separate process"""
+    async def navigate_and_click(self, selector):
+        self.logger.info(f"Navigating to {self.base_url}")
+        await self.page.goto(self.base_url)
 
-    def __init__(self, config: RunnerConfig, result_queue: queue.Queue):
-        super().__init__(daemon=True)
-        self.id = config.id
-        self.script_path = config.script_path
-        self.args = config.args or []
-        self.env_vars = config.env_vars or {}
-        self.process = None
-        self.result_queue = result_queue
-        self.is_running = False
-        self.exit_code = None
-        self.error = None
-        self.logger = setup_logger(f'Runner-{self.id}')
+        self.logger.info(f"Clicking selector: {selector}")
+        async with self.context.expect_page() as new_page_info:
+            await self.page.click(selector)
 
-    def run(self):
-        """Main thread execution method"""
-        self.logger.info(f"Starting Runner {self.id}")
-        try:
-            self.is_running = True
+        new_tab = await new_page_info.value
+        self.tabs.append(new_tab)
+        self.logger.info(f"New tab opened for selector: {selector}")
 
-            # Create environment with base environment plus custom vars
-            env = dict(os.environ)
-            env.update(self.env_vars)
+    async def refresh_and_scrape(self, tab, tab_id):
+        while True:
+            wait_time = random.uniform(1, 2)
+            await asyncio.sleep(wait_time)
+            await tab.reload()
+            content = await tab.content()
+            self.logger.info(f"[Tab {tab_id}] Refreshed and scraped {len(content)} characters")
 
-            # Start the Puppeteer process
-            cmd = [sys.executable, self.script_path] + self.args
-            self.logger.info(f"Executing command: {' '.join(cmd)}")
+    async def start_monitoring(self):
+        self.logger.info("Starting monitoring of all tabs.")
+        await asyncio.gather(*(self.refresh_and_scrape(tab, i) for i, tab in enumerate(self.tabs)))
 
-            self.process = subprocess.Popen(
-                cmd,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
+    async def run(self):
+        await self.init_browser()
 
-            # Monitor the process
-            stdout, stderr = self.process.communicate()
-            self.exit_code = self.process.returncode
-
-            if self.exit_code != 0:
-                self.error = stderr
-                self.logger.error(f"Runner {self.id} failed with exit code {self.exit_code}")
-                self.logger.error(f"Error: {stderr}")
-                self.result_queue.put((self.id, False, self.error))
-            else:
-                self.logger.info(f"Runner {self.id} completed successfully")
-                self.result_queue.put((self.id, True, stdout))
-
-        except Exception as e:
-            self.error = str(e)
-            self.logger.error(f"Exception in Runner {self.id}: {e}")
-            self.logger.error(traceback.format_exc())
-            self.result_queue.put((self.id, False, self.error))
-        finally:
-            self.is_running = False
-
-    def terminate(self):
-        """Terminate the runner process"""
-        if self.process and self.is_running:
-            self.logger.info(f"Terminating Runner {self.id}")
+        # Replace with actual selectors
+        click_selectors = ['#event1', '#event2', '#event3']
+        for sel in click_selectors:
             try:
-                self.process.terminate()
-                # Give it a moment to terminate gracefully
-                time.sleep(1)
-                # Force kill if still running
-                if self.process.poll() is None:
-                    self.process.kill()
+                await self.navigate_and_click(sel)
             except Exception as e:
-                self.logger.error(f"Error terminating Runner {self.id}: {e}")
+                self.logger.error(f"Error clicking {sel}: {e}")
+
+        await self.start_monitoring()
+
+    async def close(self):
+        self.logger.info("Shutting down browser.")
+        await self.playwright.stop()
