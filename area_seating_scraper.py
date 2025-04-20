@@ -1,13 +1,31 @@
 import asyncio
 import random
+from os import getenv
 import threading
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from playwright.async_api import Page
 
+from capsolver import Capsolver
 from logger import setup_logger
 
 
 ERROR_URL = "https://etix.com/ticket/online2z/flowError.jsp"
+
+
+async def get_available_area_numbers(page):
+    area_elements = await page.query_selector_all('map[name="EtixOnlineManifestMap"] > area[status="Available"]')
+    return [await element.get_attribute('name') for element in area_elements]  # or extract some attribute if available
+
+
+async def scrape_section_data(tab: Page, section: str):
+    with open("scripts/ticketDataAdjacentShowManifest.js", "r") as data_scraper_script:
+        seat_data =  await tab.evaluate(data_scraper_script.read(), section )
+
+    return seat_data
+
 
 class AreaSeatingScraper:
     def __init__(self, page: Page, ctx, tabs, data_callback):
@@ -18,6 +36,8 @@ class AreaSeatingScraper:
         self.logger = setup_logger("AreaSeatingScraper")
         self.data_callback = data_callback
         self.prev_available_area_numbers = []
+        self.captcha_solved_event = asyncio.Event()  # Event to track CAPTCHA resolution
+        self.captcha_solved_event.set()  # Initially set to True (no CAPTCHA)
 
     async def run(self):
         while True:
@@ -31,7 +51,7 @@ class AreaSeatingScraper:
             await self.page.reload()
 
 
-            available_areas = await self.get_available_area_numbers(self.page)
+            available_areas = await get_available_area_numbers(self.page)
 
             if available_areas != self.prev_available_area_numbers:
                 self.logger.info(f"{len(available_areas)} available sections found.")
@@ -41,6 +61,9 @@ class AreaSeatingScraper:
                 self.logger.info(f"Found new areas: {diff}")
 
                 for area_number in diff:
+                    # waiting till captcha is solved ( if there is )
+                    await self.captcha_solved_event.wait()
+
                     new_tab: Page = await self.context.new_page()
                     await new_tab.goto(self.page.url)
                     self.tabs.append(new_tab)
@@ -53,11 +76,6 @@ class AreaSeatingScraper:
                 self.logger.info("No available areas. Refreshing...")
             else:
                 self.logger.info("No new available areas. Refreshing...")
-
-
-    async def get_available_area_numbers(self, page):
-        area_elements = await page.query_selector_all('map[name="EtixOnlineManifestMap"] > area[status="Available"]')
-        return [await element.get_attribute('name') for element in area_elements]  # or extract some attribute if available
 
     async def close_all_tabs(self):
         for tab in self.tabs:
@@ -72,55 +90,90 @@ class AreaSeatingScraper:
         self.timed_out = False
 
     async def monitor_tab(self, tab: Page, area_number: str):
-        await tab.wait_for_selector('ul[id="ticket-type"]')
-        await tab.evaluate(f"chooseSection('{area_number}')")
-        self.logger.info(f"Selected section {area_number}")
+        try:
+            await tab.wait_for_selector('ul[id="ticket-type"]')
+            await tab.evaluate(f"chooseSection('{area_number}')")
+            self.logger.info(f"Selected section {area_number}")
 
-        # Wait for redirection
-        await tab.wait_for_selector("div[id='seatingChart']")
-        self.logger.info("Selection complete")
-
-
-        while True:
-            await asyncio.sleep(random.uniform(1, 5))
-            await tab.reload()
-
-            current_url = tab.url
-            if current_url == ERROR_URL:
-                self.timed_out = True
-
+            # Check for CAPTCHA after selection
+            if await self.check_for_captcha(tab):
+                await self.handle_captcha(tab)
                 return
-            #try:
-            #    seats = await self.scrape_section_data(tab)
 
-            #    if not seats:
-            #        # no seats available. close page
-            #        await tab.close()
-            #        self.tabs.remove(tab)
-            #        self.logger.debug(f"No seats available in area {area_number}. Closing tab...")
-            #        break
+            await tab.wait_for_selector("div[id='seatingChart']")
+            self.logger.info("Selection complete")
 
-            #    for seat in seats:
-            #        await self.data_callback(seat)
-            #except Exception as e:
-            #    self.logger.error(f"Error in tab {area_number}: {e}")
+            while True:
+                await asyncio.sleep(random.uniform(1, 5))
+                await tab.reload()
 
-    async def scrape_section_data(self, tab: Page):
-        circles = await tab.query_selector_all('div#seatingChart circle.uncheckedTd')
+                # Check for CAPTCHA on reload
+                if await self.check_for_captcha(tab):
+                    await self.handle_captcha(tab)
+                    return
 
-        seat_data = []
-        for circle in circles:
-            section = await circle.get_attribute("s")
-            row_number = await circle.get_attribute("rn")
-            seat_number = await circle.get_attribute("c")
+                current_url = tab.url
+                if current_url == ERROR_URL:
+                    self.timed_out = True
+                    return
 
-            seat_data.append({
-                "seat": seat_number,
-                "row": row_number,
-                "price": float(100),
-                "info": "",  # Add custom logic if needed
-                "section": section,  # You can extract from URL or page content
-                "eventUrl": tab.url
-            })
+                try:
+                    seats = await scrape_section_data(tab, area_number)
+                    if not seats:
+                        await tab.close()
+                        self.tabs.remove(tab)
+                        self.logger.debug(f"No seats available in area {area_number}. Closing tab...")
+                        break
 
-        return seat_data
+                    for seat in seats:
+                        await self.data_callback(seat)
+                except Exception as e:
+                    self.logger.error(f"Error in tab {area_number}: {e}")
+
+        except Exception as e:
+            self.logger.error(f"Error in monitor_tab for area {area_number}: {e}")
+            await tab.close()
+            if tab in self.tabs:
+                self.tabs.remove(tab)
+
+    async def handle_captcha(self, tab: Page):
+        """Handle CAPTCHA detection and wait for resolution"""
+        self.captcha_solved_event.clear()  # This will make all waits block
+
+        self.logger.warning("CAPTCHA detected! Pausing all operations...")
+
+        async with Capsolver(getenv("CAPSOLVER_API_KEY")) as capsolver:
+            solution = await capsolver.solve_recaptcha_v2_invisible(
+                website_url="https://www.etix.com",
+                website_key="6LedR4IUAAAAAN1WFw_JWomeQEZbfo75LAPLvMQG"
+            )
+            if solution:
+                print(f"Solved captcha!")
+                await tab.evaluate("response => recaptchaCallback(response)", solution)
+            else:
+                print("Failed to solve captcha")
+
+        # For now, we'll just wait for manual resolution
+        try:
+            await tab.wait_for_selector("div.captcha:not(:visible)", timeout=300000)  # Wait up to 5 minutes
+            self.logger.info("CAPTCHA appears to be resolved")
+        except Exception as e:
+            self.logger.error(f"Error waiting for CAPTCHA resolution: {e}")
+        finally:
+            self.captcha_solved_event.set()  # Resume operations
+            await tab.close()
+            if tab in self.tabs:
+                self.tabs.remove(tab)
+
+    async def check_for_captcha(self, page: Page) -> bool:
+        """Check if a CAPTCHA is present on the page"""
+        try:
+            element = await page.query_selector("input#recaptcha-token")
+            if element:
+                visible = await element.is_visible()
+                if visible:
+                    return True
+            return False
+        except Exception as e:
+            self.logger.error(f"Error checking for CAPTCHA: {e}")
+            return False

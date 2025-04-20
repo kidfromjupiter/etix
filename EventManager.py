@@ -2,6 +2,7 @@ import asyncio
 import random
 
 from area_seating_scraper import AreaSeatingScraper
+from capsolver import Capsolver
 from logger import setup_logger
 import httpx
 from playwright.async_api import async_playwright, Page
