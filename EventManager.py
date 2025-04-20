@@ -35,9 +35,8 @@ class EventManager:
             self.logger.info("Image with usemap not found.")
             return False
 
-
-
     async def run_main_monitor(self):
+        await self.page.wait_for_selector('ul[id="ticket-type"]')
         if not await self.check_manifest_image(self.page):
             self.logger.info("Manifest image not found. Checking for seating canvas...")
             if await self.page.locator('div#seatingMap canvas').count() > 0:
