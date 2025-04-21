@@ -31,7 +31,7 @@ class TicketDataIngest(BaseModel):
 
 class EventCreate(BaseModel):
     name: str
-    date: datetime
+    date: str
 
 class RawData(RootModel[Any]):
     pass

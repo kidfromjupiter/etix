@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from playwright.async_api import Page
+from playwright.async_api import Page, TimeoutError
 
 from capsolver import Capsolver
 from logger import setup_logger
@@ -37,6 +37,7 @@ class AreaSeatingScraper:
         self.data_callback = data_callback
         self.prev_available_area_numbers = []
         self.captcha_solved_event = asyncio.Event()  # Event to track CAPTCHA resolution
+        self.looking_for_captcha_event = asyncio.Event()
         self.captcha_solved_event.set()  # Initially set to True (no CAPTCHA)
 
     async def run(self):
@@ -69,6 +70,9 @@ class AreaSeatingScraper:
                     self.tabs.append(new_tab)
                     asyncio.create_task(self.monitor_tab(new_tab, area_number))
 
+                    # created one new tab. Now waiting before next iteration
+                    await self.looking_for_captcha_event.wait()
+
                 self.prev_available_area_numbers = available_areas
 
 
@@ -92,13 +96,15 @@ class AreaSeatingScraper:
     async def monitor_tab(self, tab: Page, area_number: str):
         try:
             await tab.wait_for_selector('ul[id="ticket-type"]')
-            await tab.evaluate(f"chooseSection('{area_number}')")
+            async with tab.expect_navigation() as _:
+                await tab.evaluate(f"chooseSection('{area_number}')")
+
+                # Check for CAPTCHA after selection
+                if await self.check_for_captcha(tab, area_number, first_load=True):
+                    await self.handle_captcha(tab)
+
             self.logger.info(f"Selected section {area_number}")
 
-            # Check for CAPTCHA after selection
-            if await self.check_for_captcha(tab):
-                await self.handle_captcha(tab)
-                return
 
             await tab.wait_for_selector("div[id='seatingChart']")
             self.logger.info("Selection complete")
@@ -108,7 +114,7 @@ class AreaSeatingScraper:
                 await tab.reload()
 
                 # Check for CAPTCHA on reload
-                if await self.check_for_captcha(tab):
+                if await self.check_for_captcha(tab, area_number, first_load=False):
                     await self.handle_captcha(tab)
                     return
 
@@ -119,14 +125,15 @@ class AreaSeatingScraper:
 
                 try:
                     seats = await scrape_section_data(tab, area_number)
+                    self.logger.info(f"Extracted data for section {area_number}")
                     if not seats:
-                        await tab.close()
+                        #await tab.close()
                         self.tabs.remove(tab)
                         self.logger.debug(f"No seats available in area {area_number}. Closing tab...")
                         break
 
-                    for seat in seats:
-                        await self.data_callback(seat)
+                    if seats:
+                        await self.data_callback(seats)
                 except Exception as e:
                     self.logger.error(f"Error in tab {area_number}: {e}")
 
@@ -165,15 +172,21 @@ class AreaSeatingScraper:
             if tab in self.tabs:
                 self.tabs.remove(tab)
 
-    async def check_for_captcha(self, page: Page) -> bool:
+    async def check_for_captcha(self, page: Page, area_number: str, first_load: bool) -> bool:
         """Check if a CAPTCHA is present on the page"""
+        if first_load : self.looking_for_captcha_event.clear() # this will pause new tab creation
+
+        self.logger.info(f"Checking for captcha in {area_number}")
         try:
-            element = await page.query_selector("input#recaptcha-token")
+            element = await page.wait_for_selector("input#recaptcha-token",timeout=5000, state="attached")
             if element:
-                visible = await element.is_visible()
-                if visible:
-                    return True
+                return True
+            self.logger.info(f"No captcha found in area {area_number}")
             return False
+        except TimeoutError:
+            self.logger.info("Recaptcha check timed out. Seems to be no captcha")
         except Exception as e:
             self.logger.error(f"Error checking for CAPTCHA: {e}")
             return False
+        finally:
+            self.looking_for_captcha_event.set()

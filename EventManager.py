@@ -1,8 +1,9 @@
 import asyncio
-import random
+import datetime
+
+from playwright.sync_api import Playwright
 
 from area_seating_scraper import AreaSeatingScraper
-from capsolver import Capsolver
 from logger import setup_logger
 import httpx
 from playwright.async_api import async_playwright, Page
@@ -11,6 +12,7 @@ import aiohttp
 
 class EventManager:
     def __init__(self, base_url, api_url):
+        self.playwright = None
         self.base_url = base_url
         self.api_url = api_url
         self.context = None
@@ -19,6 +21,7 @@ class EventManager:
         self.logger = setup_logger("EventManager")
         self.client = httpx.AsyncClient()
         self.timed_out = False
+        self.event_id: int = 0
 
     async def init_browser(self):
         self.logger.info("Launching browser...")
@@ -27,6 +30,8 @@ class EventManager:
         self.context = await browser.new_context()
         self.page = await self.context.new_page()
         self.logger.info("Browser launched and context created.")
+        await self.create_event()
+
 
     async def check_manifest_image(self, page):
         try:
@@ -56,9 +61,21 @@ class EventManager:
 
     async def post_to_fastapi(self, data: dict):
         async with aiohttp.ClientSession() as session:
-            async with session.post("http://localhost:8000/ingest", json=data) as response:
+            async with session.post("http://localhost:8000/ingest", json={**data, "event_id": self.event_id}) as response:
                 if response.status != 200:
-                    self.logger.warning(f"Post failed: {await response.text()}")
+                    self.logger.warning(f"Post failed: {(await response.text())[:50]}...")
+                else:
+                    self.logger.info(f"Successfully posted data to webserver")
+
+    async def create_event(self):
+        async with aiohttp.ClientSession() as session:
+            async with session.post("http://localhost:8000/event",
+                                    json={"name": self.base_url, "date": str(datetime.datetime.now())}) as response:
+                if response != 200:
+                    self.logger.warning(f"Creating event failed for url {self.base_url}")
+                else:
+                    self.event_id = (await response.json())["event_id"]
+                    self.logger.info(f"Successfully created event {self.base_url}")
 
     async def run(self):
         await self.init_browser()

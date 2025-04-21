@@ -82,7 +82,7 @@ def get_adjacent_groups(
 def create_event(payload: EventCreate, db: Session = Depends(get_db)):
    event = Event(
        name=payload.name,
-       date=str(payload.date),
+       date=payload.date,
    )
    db.add(event)
    db.commit()
