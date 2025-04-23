@@ -8,9 +8,6 @@ def clear_existing_event_data(db: Session, event_id: int):
     """Delete all seat-related data for an event"""
     # Delete in order to respect foreign key constraints
     db.query(EventSeatPricing).filter(EventSeatPricing.event_id == event_id).delete()
-    db.query(Seat).delete()
-    db.query(Row).delete()
-    db.query(Section).delete()
     db.commit()
 
 def calculate_adjacent_seats(db: Session, event_id: int, min_group_size: int = 2):
@@ -19,27 +16,20 @@ def calculate_adjacent_seats(db: Session, event_id: int, min_group_size: int = 2
     """
     # Get all available seats for the event ordered by row and position
     available_seats = (db.query(
-        Seat.id.label("seat_id"),
-        Seat.name.label("seat_name"),
-        Seat.position_in_row,
-        Row.id.label("row_id"),
-        Row.name.label("row_name"),
-        Section.id.label("section_id"),
-        Section.name.label("section_name"),
-        PriceLevel.id.label("price_level_id"),
-        PriceLevel.name.label("price_level_name"),
-        PriceLevel.price
-    ).all())
-    #.join(Row, Seat.row_id == Row.id) \
-    #    .filter(EventSeatPricing.event_id == event_id) \
-    #    .order_by(Row.id, Seat.position_in_row) \
-    #    .all())
+        Seat,
+        Row,
+        Section,
+        PriceLevel
+    ).join(Row, Seat.row_id == Row.id)
+      .join(Section, Row.section_id == Section.id)
+      .join(EventSeatPricing, EventSeatPricing.seat_id == Seat.id)
+      .join(PriceLevel, EventSeatPricing.price_level_id == PriceLevel.id)
+      .filter(EventSeatPricing.event_id == event_id)
+      .order_by(Row.id, Seat.position_in_row)
+      .all())
 
     if not available_seats:
         return []
-
-    # Convert to dictionaries for easier processing
-    seats_data = [dict(seat) for seat in available_seats]
 
     # Group adjacent seats
     groups = []
@@ -47,15 +37,15 @@ def calculate_adjacent_seats(db: Session, event_id: int, min_group_size: int = 2
     prev_row_id = None
     prev_position = None
 
-    for seat in seats_data:
-        if prev_row_id == seat['row_id'] and (prev_position is None or seat['position_in_row'] == prev_position + 1):
-            current_group.append(seat)
+    for seat, row, section, price_level in available_seats:
+        if prev_row_id == row.id and (prev_position is None or seat.position_in_row == prev_position + 1):
+            current_group.append((seat, row, section, price_level))
         else:
             if len(current_group) >= min_group_size:
                 groups.append(current_group)
-            current_group = [seat]
-        prev_row_id = seat['row_id']
-        prev_position = seat['position_in_row']
+            current_group = [(seat, row, section, price_level)]
+        prev_row_id = row.id
+        prev_position = seat.position_in_row
 
     # Add the last group if large enough
     if len(current_group) >= min_group_size:
@@ -64,34 +54,32 @@ def calculate_adjacent_seats(db: Session, event_id: int, min_group_size: int = 2
     # Format the response
     result = []
     for group in groups:
-        row = group[0]
-        section = group[0]
-
-        unique_prices = {seat['price'] for seat in group}
-        total_price = sum(seat['price'] for seat in group)
+        first_seat, first_row, first_section, first_price_level = group[0]
+        total_price = sum(price_level.price for (_, _, _, price_level) in group)
 
         result.append({
-            "row_id": row['row_id'],
-            "row_name": row['row_name'],
-            "section_id": section['section_id'],
-            "section_name": section['section_name'],
+            "row_id": first_row.id,
+            "row_name": first_row.name,
+            "section_id": first_section.id,
+            "section_name": first_section.name,
             "seat_count": len(group),
             "seats": [{
-                "id": seat['seat_id'],
-                "name": seat['seat_name'],
-                "position_in_row": seat['position_in_row'],
-                "price": seat['price']
-            } for seat in group],
+                "id": seat.id,
+                "name": seat.name,
+                "position_in_row": seat.position_in_row,
+                "price": price_level.price
+            } for (seat, _, _, price_level) in group],
             "price_levels": [{
-                "id": group[0]['price_level_id'],
-                "name": group[0]['price_level_name'],
-                "price": group[0]['price']
+                "id": first_price_level.id,
+                "name": first_price_level.name,
+                "price": first_price_level.price
             }],  # Assuming all seats in group have same price level
             "total_price": total_price,
             "average_price": total_price / len(group)
         })
 
     return result
+
 
 def ingest_ticket_data(db: Session, ticket_data: dict, section_name: str, event_id: int):
     # Clear all existing seat data for this event
@@ -100,7 +88,7 @@ def ingest_ticket_data(db: Session, ticket_data: dict, section_name: str, event_
     # First ensure the section exists
     section = db.query(Section).filter(Section.name == section_name).first()
     if not section:
-        section = Section(name=section_name, venue_id=1)  # Default venue_id
+        section = Section(name=section_name)  # Default venue_id
         db.add(section)
         db.commit()
         db.refresh(section)
@@ -162,7 +150,7 @@ def ingest_ticket_data(db: Session, ticket_data: dict, section_name: str, event_
 
             if not pricing:
                 pricing = EventSeatPricing(
-                    event_id=event_id,  # Default event_id
+                    event_id=event_id,
                     seat_id=seat.id,
                     price_level_id=price_level_map.get(seat_data['price'], 1),  # Default price level
                     status_code=seat_data.get('status', 'O'),

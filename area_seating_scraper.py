@@ -1,5 +1,6 @@
 import asyncio
 import random
+import sys
 import time
 from os import getenv
 import threading
@@ -29,13 +30,14 @@ async def scrape_section_data(tab: Page, section: str):
 
 
 class AreaSeatingScraper:
-    def __init__(self, page: Page, ctx, tabs, data_callback):
+    def __init__(self, page: Page, ctx, data_callback):
         self.last_rate_limit_time = None
         self.page = page
         self.context = ctx
-        self.tabs = tabs
+        self.tabs: dict[str, Page] = {}
         self.timed_out = False
         self.logger = setup_logger("AreaSeatingScraper")
+        self.logger.propagate = False
         self.data_callback = data_callback
         self.prev_available_area_numbers = []
         self.captcha_solved_event = asyncio.Event()  # Event to track CAPTCHA resolution
@@ -43,21 +45,35 @@ class AreaSeatingScraper:
         self.rate_limited_event = asyncio.Event() # Event to check rate limits
         self.rate_limited_event.set() # no rate limits initially
         self.captcha_solved_event.set()  # Initially set to True (no CAPTCHA)
-        self.last_rate_limit_cooldown = 0 # in seconds
+        self.rate_limit_cooldown = 0 # in seconds
+        self.ready_areas = []
+        self.initial_spawning_complete = False
+
+    async def spawn_tab(self, area_number):
+
+        # waiting till captcha is solved ( if there is )
+        await self.captcha_solved_event.wait()
+
+        new_tab: Page = await self.context.new_page()
+        await new_tab.goto(self.page.url)
+
+        self.tabs[area_number] = new_tab
+        await self.navigate_to_seating_manifest(new_tab, area_number)
 
     async def run(self):
+        # once off action
+        asyncio.create_task(self.reload_tabs())
+
         while True:
-
-            # Detecting a timeout error and restarting the process
-            if self.timed_out:
-                self.logger.warning("Flow error detected. Closing all tabs.")
-                await self.close_all_tabs()
-
-            await asyncio.sleep(random.uniform(1, 2))
-            await self.page.reload()
-
+            await self.page.wait_for_load_state("networkidle")
 
             available_areas = await get_available_area_numbers(self.page)
+
+            for area_number in available_areas:
+                if area_number not in self.tabs.keys() and self.initial_spawning_complete:
+                    # probably was closed due to some exception. Should restart
+                    self.logger.warning(f"Respawning previously closed tab {area_number}")
+                    await self.spawn_tab(area_number)
 
             if available_areas != self.prev_available_area_numbers:
                 self.logger.info(f"{len(available_areas)} available sections found.")
@@ -67,21 +83,11 @@ class AreaSeatingScraper:
                 self.logger.info(f"Found new areas: {diff}")
 
                 for area_number in diff:
-                    # waiting till captcha is solved ( if there is )
-                    await self.captcha_solved_event.wait()
+                    await self.spawn_tab(area_number)
 
-                    # pause new tab creation if rate limited
-                    await self.rate_limited_event.wait()
-
-                    new_tab: Page = await self.context.new_page()
-                    await new_tab.goto(self.page.url)
-                    self.tabs.append(new_tab)
-                    asyncio.create_task(self.monitor_tab(new_tab, area_number))
-
-                    # created one new tab. Now waiting before next iteration
-                    await self.looking_for_captcha_event.wait()
 
                 self.prev_available_area_numbers = available_areas
+                self.initial_spawning_complete = True
 
 
             elif not available_areas:
@@ -89,11 +95,14 @@ class AreaSeatingScraper:
             else:
                 self.logger.info("No new available areas. Refreshing...")
 
+            await asyncio.sleep(random.uniform(30, 60))
+            await self.page.reload()
+
     async def close_all_tabs(self):
-        for tab in self.tabs:
+        for tab in self.tabs.keys():
             try:
-                await tab.close()
-                self.tabs.remove(tab)
+                await self.tabs[tab].close()
+                self.tabs.pop(tab)
             except:
                 pass
         self.tabs.clear()
@@ -101,94 +110,93 @@ class AreaSeatingScraper:
         # resetting the timedout flag
         self.timed_out = False
 
-    async def handle_rate_limit(self, area):
-        """Handle rate limiting by pausing all activities"""
-        if self.rate_limited_event.is_set():
-            # was not rate limited before. Ensures that cooldown is only applied once
-
-            self.rate_limited_event.clear()  # This will block all operations
-            self.last_rate_limit_time = time.time()
-
-            self.logger.warning("RATE LIMIT DETECTED! Pausing all scraping activities...")
-
-            # Wait for cooldown period
-
-            await asyncio.sleep(self.last_rate_limit_cooldown + 5)
-
-            self.logger.warning(f"Resuming operations after rate limit cooldown on {area}...")
-            self.rate_limited_event.set()  # Resume operations
-
     def handle_response(self, response, area_number: str):
         if response.status == 429:
-            self.logger.warning(f"Got rate limited on area {area_number}")
-            asyncio.create_task(self.handle_rate_limit())
+            self.logger.warning(f"Got rate limited on area {area_number}. Increasing rate limit cooldown "
+                                f"to {self.rate_limit_cooldown + 1}s")
+            self.rate_limit_cooldown += 1
+
+    async def reload_tabs(self):
+        while True:
+            if not self.tabs.keys():
+                await asyncio.sleep(1)
+
+            for area_number in list(self.tabs.keys()):
+                if area_number not in self.ready_areas:
+                    await asyncio.sleep(1)
+                    continue
+
+
+                # respect rate limiting
+                await asyncio.sleep(self.rate_limit_cooldown)
+
+                #await asyncio.sleep(random.uniform(0, 3))
+
+                tab = self.tabs[area_number]
+
+                self.logger.info(f"Reloading area {area_number} for updates..")
+                await tab.reload()
+
+
+                # Check for CAPTCHA on reload
+                if await self.check_for_captcha(tab, area_number, first_load=False):
+                    await self.handle_captcha(tab,area_number)
+
+                await self.captcha_solved_event.wait()
+
+                current_url = tab.url
+                if current_url == ERROR_URL:
+                    self.timed_out = True
+
+                await asyncio.sleep(0)
+                try:
+                    seats = await scrape_section_data(tab, area_number)
+                    self.logger.info(f"Extracted data for section {area_number}")
+                    if seats:
+                        with open(area_number, 'w') as output_file:
+                            output_file.write(str(seats))
+                        await self.data_callback(seats)
+                except Exception as e:
+                    self.logger.error(f"Error in tab {area_number}: {e}")
+                    await tab.close()
+                    self.tabs.pop(area_number)
 
 
 
-    async def monitor_tab(self, tab: Page, area_number: str):
-
+    async def navigate_to_seating_manifest(self, tab: Page, area_number: str):
         # setting up event handler to check for rate limits
         tab.on("response", lambda response: self.handle_response(response, area_number))
 
         try:
             await tab.wait_for_selector('ul[id="ticket-type"]')
             async with tab.expect_navigation() as _:
+
+                # abiding by the rate limit cooldown
+                self.logger.info("Waiting till rate_limit_cooldown over...")
+                await asyncio.sleep(self.rate_limit_cooldown)
+                self.logger.info("Rate limit cooldown over...")
+
                 await tab.evaluate(f"chooseSection('{area_number}')")
+                self.logger.info(f"Chosen section {area_number}")
 
                 # Check for CAPTCHA after selection
                 if await self.check_for_captcha(tab, area_number, first_load=True):
-                    await self.handle_captcha(tab)
+                    await self.handle_captcha(tab, area_number)
 
             self.logger.info(f"Selected section {area_number}")
 
 
-            # wait till rate limiting is over before reloading. Waiting here because rate limit usually
-            # happens after section is chosen
-            await self.rate_limited_event.wait()
-
             await tab.wait_for_selector("div[id='seatingChart']")
             self.logger.info("Selection complete")
-
-            while True:
-                await asyncio.sleep(random.uniform(1, 5))
-
-                # wait till rate limiting is over before reloading
-                await self.rate_limited_event.wait()
-
-                self.logger.info(f"Reloading area {area_number} for updates..")
-                await tab.reload()
-
-                # Check for CAPTCHA on reload
-                if await self.check_for_captcha(tab, area_number, first_load=False):
-                    await self.handle_captcha(tab)
-                    return
-
-                current_url = tab.url
-                if current_url == ERROR_URL:
-                    self.timed_out = True
-                    return
-
-                try:
-                    seats = await scrape_section_data(tab, area_number)
-                    self.logger.info(f"Extracted data for section {area_number}")
-                    if not seats:
-                        #await tab.close()
-                        self.tabs.remove(tab)
-                        self.logger.debug(f"No seats available in area {area_number}. Closing tab...")
-                        break
-
-                    if seats:
-                        await self.data_callback(seats)
-                except Exception as e:
-                    self.logger.error(f"Error in tab {area_number}: {e}")
+            self.ready_areas.append(area_number)
 
         except Exception as e:
             self.logger.error(f"Error in monitor_tab for area {area_number}: {e}")
             await tab.close()
             if tab in self.tabs:
-                self.tabs.remove(tab)
+                self.tabs.pop(area_number)
 
-    async def handle_captcha(self, tab: Page):
+    async def handle_captcha(self, tab: Page, area_number: str):
         """Handle CAPTCHA detection and wait for resolution"""
         self.captcha_solved_event.clear()  # This will make all waits block
 
@@ -200,13 +208,20 @@ class AreaSeatingScraper:
                    .wait_for(timeout=5000))
 
             try:
+                #await asyncio.sleep(30)
                 async with Capsolver(getenv("CAPSOLVER_API_KEY")) as capsolver:
+                    self.logger.info("Trying to solve captcha..")
                     solution = await capsolver.solve_recaptcha_v2_invisible(
                         website_url="https://www.etix.com",
                         website_key="6LedR4IUAAAAAN1WFw_JWomeQEZbfo75LAPLvMQG"
                     )
                     if solution:
-                        await tab.evaluate("solution => ___grecaptcha_cfg.clients['0']['F']['F']['callback'](solution)", solution)
+                        # automatically finding the recaptcha callback and calling it
+                        with open("scripts/getRecaptchaCallback.js") as callback_finder:
+                            results = await tab.evaluate(callback_finder.read())
+                            await tab.evaluate(
+                                f"solution => {results[0]['callback']}(solution)", solution)
+
                         self.logger.info(f"Solved captcha!")
                     else:
                         self.logger.info("Failed to solve captcha")
@@ -219,7 +234,7 @@ class AreaSeatingScraper:
                 self.logger.error(f"Error waiting for CAPTCHA resolution: {e}. \n Clearing tab..")
                 await tab.close()
                 if tab in self.tabs:
-                    self.tabs.remove(tab)
+                    self.tabs.pop(area_number)
             finally:
                 self.logger.info("Resuming operations..")
                 self.captcha_solved_event.set()  # Resume operations

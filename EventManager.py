@@ -17,7 +17,6 @@ class EventManager:
         self.api_url = api_url
         self.context = None
         self.page = None
-        self.tabs = []
         self.logger = setup_logger("EventManager")
         self.client = httpx.AsyncClient()
         self.timed_out = False
@@ -26,7 +25,7 @@ class EventManager:
     async def init_browser(self):
         self.logger.info("Launching browser...")
         self.playwright = await async_playwright().start()
-        browser = await self.playwright.chromium.launch(headless=False)
+        browser = await self.playwright.chromium.launch(headless=True)
         self.context = await browser.new_context()
         self.page = await self.context.new_page()
         self.logger.info("Browser launched and context created.")
@@ -55,7 +54,7 @@ class EventManager:
 
         self.logger.info("Manifest image found. Starting main refresh loop...")
 
-        seating_scraper = AreaSeatingScraper(self.page, self.context, self.tabs, self.post_to_fastapi)
+        seating_scraper = AreaSeatingScraper(self.page, self.context, self.post_to_fastapi)
         await seating_scraper.run()
 
 

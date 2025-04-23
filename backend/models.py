@@ -21,7 +21,6 @@ class Section(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
-    venue_id = Column(Integer, nullable=False)
     is_rowless = Column(Boolean, default=False)
 
     rows = relationship("Row", back_populates="section")
