@@ -1,5 +1,6 @@
 import asyncio
 import random
+import time
 from os import getenv
 import threading
 from dotenv import load_dotenv
@@ -29,6 +30,7 @@ async def scrape_section_data(tab: Page, section: str):
 
 class AreaSeatingScraper:
     def __init__(self, page: Page, ctx, tabs, data_callback):
+        self.last_rate_limit_time = None
         self.page = page
         self.context = ctx
         self.tabs = tabs
@@ -38,7 +40,10 @@ class AreaSeatingScraper:
         self.prev_available_area_numbers = []
         self.captcha_solved_event = asyncio.Event()  # Event to track CAPTCHA resolution
         self.looking_for_captcha_event = asyncio.Event()
+        self.rate_limited_event = asyncio.Event() # Event to check rate limits
+        self.rate_limited_event.set() # no rate limits initially
         self.captcha_solved_event.set()  # Initially set to True (no CAPTCHA)
+        self.last_rate_limit_cooldown = 0 # in seconds
 
     async def run(self):
         while True:
@@ -64,6 +69,9 @@ class AreaSeatingScraper:
                 for area_number in diff:
                     # waiting till captcha is solved ( if there is )
                     await self.captcha_solved_event.wait()
+
+                    # pause new tab creation if rate limited
+                    await self.rate_limited_event.wait()
 
                     new_tab: Page = await self.context.new_page()
                     await new_tab.goto(self.page.url)
@@ -93,7 +101,35 @@ class AreaSeatingScraper:
         # resetting the timedout flag
         self.timed_out = False
 
+    async def handle_rate_limit(self, area):
+        """Handle rate limiting by pausing all activities"""
+        if self.rate_limited_event.is_set():
+            # was not rate limited before. Ensures that cooldown is only applied once
+
+            self.rate_limited_event.clear()  # This will block all operations
+            self.last_rate_limit_time = time.time()
+
+            self.logger.warning("RATE LIMIT DETECTED! Pausing all scraping activities...")
+
+            # Wait for cooldown period
+
+            await asyncio.sleep(self.last_rate_limit_cooldown + 5)
+
+            self.logger.warning(f"Resuming operations after rate limit cooldown on {area}...")
+            self.rate_limited_event.set()  # Resume operations
+
+    def handle_response(self, response, area_number: str):
+        if response.status == 429:
+            self.logger.warning(f"Got rate limited on area {area_number}")
+            asyncio.create_task(self.handle_rate_limit())
+
+
+
     async def monitor_tab(self, tab: Page, area_number: str):
+
+        # setting up event handler to check for rate limits
+        tab.on("response", lambda response: self.handle_response(response, area_number))
+
         try:
             await tab.wait_for_selector('ul[id="ticket-type"]')
             async with tab.expect_navigation() as _:
@@ -106,11 +142,20 @@ class AreaSeatingScraper:
             self.logger.info(f"Selected section {area_number}")
 
 
+            # wait till rate limiting is over before reloading. Waiting here because rate limit usually
+            # happens after section is chosen
+            await self.rate_limited_event.wait()
+
             await tab.wait_for_selector("div[id='seatingChart']")
             self.logger.info("Selection complete")
 
             while True:
                 await asyncio.sleep(random.uniform(1, 5))
+
+                # wait till rate limiting is over before reloading
+                await self.rate_limited_event.wait()
+
+                self.logger.info(f"Reloading area {area_number} for updates..")
                 await tab.reload()
 
                 # Check for CAPTCHA on reload
@@ -149,44 +194,57 @@ class AreaSeatingScraper:
 
         self.logger.warning("CAPTCHA detected! Pausing all operations...")
 
-        async with Capsolver(getenv("CAPSOLVER_API_KEY")) as capsolver:
-            solution = await capsolver.solve_recaptcha_v2_invisible(
-                website_url="https://www.etix.com",
-                website_key="6LedR4IUAAAAAN1WFw_JWomeQEZbfo75LAPLvMQG"
-            )
-            if solution:
-                print(f"Solved captcha!")
-                await tab.evaluate("response => recaptchaCallback(response)", solution)
-            else:
-                print("Failed to solve captcha")
-
-        # For now, we'll just wait for manual resolution
         try:
-            await tab.wait_for_selector("div.captcha:not(:visible)", timeout=300000)  # Wait up to 5 minutes
-            self.logger.info("CAPTCHA appears to be resolved")
-        except Exception as e:
-            self.logger.error(f"Error waiting for CAPTCHA resolution: {e}")
-        finally:
+            # waiting for the main captcha body to show up
+            await (tab.frame_locator("iframe[src*='recaptcha.net']:not([role='presentation'])").locator("div.rc-imageselect-payload")
+                   .wait_for(timeout=5000))
+
+            try:
+                async with Capsolver(getenv("CAPSOLVER_API_KEY")) as capsolver:
+                    solution = await capsolver.solve_recaptcha_v2_invisible(
+                        website_url="https://www.etix.com",
+                        website_key="6LedR4IUAAAAAN1WFw_JWomeQEZbfo75LAPLvMQG"
+                    )
+                    if solution:
+                        await tab.evaluate("solution => ___grecaptcha_cfg.clients['0']['F']['F']['callback'](solution)", solution)
+                        self.logger.info(f"Solved captcha!")
+                    else:
+                        self.logger.info("Failed to solve captcha")
+
+                # waiting for seating chart to appear
+                await tab.wait_for_selector('div#seatingChart')
+
+                self.logger.info("CAPTCHA appears to be resolved")
+            except Exception as e:
+                self.logger.error(f"Error waiting for CAPTCHA resolution: {e}. \n Clearing tab..")
+                await tab.close()
+                if tab in self.tabs:
+                    self.tabs.remove(tab)
+            finally:
+                self.logger.info("Resuming operations..")
+                self.captcha_solved_event.set()  # Resume operations
+        except TimeoutError:
+            self.logger.info("Captcha wasn't fully launched. Resuming operations")
             self.captcha_solved_event.set()  # Resume operations
-            await tab.close()
-            if tab in self.tabs:
-                self.tabs.remove(tab)
 
     async def check_for_captcha(self, page: Page, area_number: str, first_load: bool) -> bool:
         """Check if a CAPTCHA is present on the page"""
-        if first_load : self.looking_for_captcha_event.clear() # this will pause new tab creation
 
         self.logger.info(f"Checking for captcha in {area_number}")
         try:
-            element = await page.wait_for_selector("input#recaptcha-token",timeout=5000, state="attached")
+            element = await page.wait_for_selector('iframe[src*="recaptcha.net"]',timeout=5000, state="attached")
             if element:
+                self.logger.info(f"Found captcha in {area_number}")
                 return True
-            self.logger.info(f"No captcha found in area {area_number}")
+            else:
+                self.logger.info(f"No captcha found in area {area_number}")
+                self.looking_for_captcha_event.set()
             return False
         except TimeoutError:
             self.logger.info("Recaptcha check timed out. Seems to be no captcha")
+            self.looking_for_captcha_event.set()
+            return False
         except Exception as e:
             self.logger.error(f"Error checking for CAPTCHA: {e}")
-            return False
-        finally:
             self.looking_for_captcha_event.set()
+            return False
