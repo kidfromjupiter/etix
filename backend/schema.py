@@ -5,33 +5,37 @@ from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional, List
 
-class AdjacentSeatsResponse(BaseModel):
-    row_id: int
-    row_name: str
-    section_id: int
-    section_name: str
-    seat_count: int
-    seats: List[Dict[str, Any]]
-    price_levels: List[Dict[str, Any]]
-    total_price: float
-    average_price: float
-
-class TicketDataIngest(BaseModel):
-    event_id: int
-    all: Dict[str, Any]
-    available: List[Dict[str, Any]]
-    availableByRow: Dict[str, List[Dict[str, Any]]]
-    availableByPrice: Dict[str, List[Dict[str, Any]]]
-    adjacentSeats: List[Dict[str, Any]]
-    adjacentByCount: Dict[int, List[Dict[str, Any]]]
-    summary: Dict[str, Any]
-    map: List[str]
-    statusLegend: Dict[str, str]
-    section: str
-
-class EventCreate(BaseModel):
+class PriceCode(BaseModel):
+    id: int
     name: str
-    date: str
+    description: str
 
+class Seat(BaseModel):
+    rowIndex: int
+    seatIndex: int
+    row: str
+    seat: str
+    seatIdentifier: str
+    status: str
+    currentStatus: str
+    realStatus: str
+    isAvailable: bool
+    note: str
+    holdComment: str
+    priceLevelId: str
+    price: str
+    priceNum: str
+    priceCode: PriceCode
+
+class RowData(BaseModel):
+    row: str
+    seats: List[Seat]
+    count: int
+    priceRange: dict  # can define a model if you need stricter validation
+
+class SeatingIngestRequest(BaseModel):
+    event_id: str
+    rows: List[RowData]
+# used only for debug
 class RawData(RootModel[Any]):
     pass

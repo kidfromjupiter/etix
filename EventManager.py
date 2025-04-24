@@ -1,7 +1,9 @@
 import asyncio
 import datetime
+import os
+import re
 
-from playwright.sync_api import Playwright
+import psutil
 
 from area_seating_scraper import AreaSeatingScraper
 from logger import setup_logger
@@ -9,26 +11,27 @@ import httpx
 from playwright.async_api import async_playwright, Page
 import aiohttp
 
+from proxy_manager import ProxyManager
+
+EVENT_URL = "https://www.etix.com/ticket/p/78414997/alison-krauss-union-station-featuring-jerry-douglas-redding-redding-civic-auditorium?clickref=1011lArps4TX"
+HEADLESS_MODE = False
 
 class EventManager:
-    def __init__(self, base_url, api_url):
+    def __init__(self, base_url, api_url, proxy_manager):
         self.playwright = None
         self.base_url = base_url
         self.api_url = api_url
         self.context = None
         self.page = None
         self.logger = setup_logger("EventManager")
+        self.logger.propagate = False
         self.client = httpx.AsyncClient()
         self.timed_out = False
         self.event_id: int = 0
+        self.proxy_manager: ProxyManager = proxy_manager
 
     async def init_browser(self):
-        self.logger.info("Launching browser...")
-        self.playwright = await async_playwright().start()
-        browser = await self.playwright.chromium.launch(headless=True)
-        self.context = await browser.new_context()
-        self.page = await self.context.new_page()
-        self.logger.info("Browser launched and context created.")
+        self.page = await self.proxy_manager.create_tab()
         await self.create_event()
 
 
@@ -54,7 +57,7 @@ class EventManager:
 
         self.logger.info("Manifest image found. Starting main refresh loop...")
 
-        seating_scraper = AreaSeatingScraper(self.page, self.context, self.post_to_fastapi)
+        seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager)
         await seating_scraper.run()
 
 
@@ -70,7 +73,7 @@ class EventManager:
         async with aiohttp.ClientSession() as session:
             async with session.post("http://localhost:8000/event",
                                     json={"name": self.base_url, "date": str(datetime.datetime.now())}) as response:
-                if response != 200:
+                if response.status != 200:
                     self.logger.warning(f"Creating event failed for url {self.base_url}")
                 else:
                     self.event_id = (await response.json())["event_id"]
@@ -86,8 +89,34 @@ class EventManager:
         await self.client.aclose()
         await self.playwright.stop()
 
-if __name__ == "__main__":
-    manager = EventManager("https://www.etix.com/ticket/p/78414997/alison-krauss-union-station-featuring-jerry-douglas-redding-redding-civic-auditorium?clickref=1011lArps4TX",
+
+async def main():
+    lg = setup_logger("Main")
+    lg.propagate = False
+    lg.info("Launching browser...")
+    playwright = await async_playwright().start()
+    browser = await playwright.chromium.launch(headless=HEADLESS_MODE)
+
+    with open("proxy_list") as proxy_list:
+        proxies = proxy_list.readlines()
+        sanitized_proxies = []
+        for proxy in proxies:
+            pattern = r"(\d.+):(\w+):(\w+)"
+            matches = re.search(pattern, proxy)
+            sanitized_proxies.append({
+                "server": f'http://{matches.group(1)}',
+                "username": matches.group(2),
+                "password": matches.group(3)
+            })
+        proxy_manager = ProxyManager(
+            browser, sanitized_proxies
+        )
+    manager = EventManager(EVENT_URL,
                            "http://localhost:8000/ingest",
+                           proxy_manager
                            )
-    asyncio.run(manager.run())
+    lg.info("Browser launched")
+    await manager.run()
+
+if __name__ == "__main__":
+    asyncio.run(main())

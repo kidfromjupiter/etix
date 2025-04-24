@@ -6,6 +6,8 @@ from os import getenv
 import threading
 from dotenv import load_dotenv
 
+from proxy_manager import ProxyManager
+
 load_dotenv()
 
 from playwright.async_api import Page, TimeoutError
@@ -13,6 +15,7 @@ from playwright.async_api import Page, TimeoutError
 from capsolver import Capsolver
 from logger import setup_logger
 
+DEBUG=True
 
 ERROR_URL = "https://etix.com/ticket/online2z/flowError.jsp"
 
@@ -30,22 +33,22 @@ async def scrape_section_data(tab: Page, section: str):
 
 
 class AreaSeatingScraper:
-    def __init__(self, page: Page, ctx, data_callback):
+    def __init__(self, page: Page, data_callback, proxy_manager: ProxyManager):
         self.last_rate_limit_time = None
         self.page = page
-        self.context = ctx
         self.tabs: dict[str, Page] = {}
         self.timed_out = False
         self.logger = setup_logger("AreaSeatingScraper")
         self.logger.propagate = False
         self.data_callback = data_callback
+        self.proxy_manager = proxy_manager
         self.prev_available_area_numbers = []
         self.captcha_solved_event = asyncio.Event()  # Event to track CAPTCHA resolution
         self.looking_for_captcha_event = asyncio.Event()
         self.rate_limited_event = asyncio.Event() # Event to check rate limits
         self.rate_limited_event.set() # no rate limits initially
         self.captcha_solved_event.set()  # Initially set to True (no CAPTCHA)
-        self.rate_limit_cooldown = 0 # in seconds
+        #self.rate_limit_cooldown = 0 # in seconds
         self.ready_areas = []
         self.initial_spawning_complete = False
 
@@ -54,7 +57,7 @@ class AreaSeatingScraper:
         # waiting till captcha is solved ( if there is )
         await self.captcha_solved_event.wait()
 
-        new_tab: Page = await self.context.new_page()
+        new_tab: Page = await self.proxy_manager.create_tab()
         await new_tab.goto(self.page.url)
 
         self.tabs[area_number] = new_tab
@@ -98,24 +101,6 @@ class AreaSeatingScraper:
             await asyncio.sleep(random.uniform(30, 60))
             await self.page.reload()
 
-    async def close_all_tabs(self):
-        for tab in self.tabs.keys():
-            try:
-                await self.tabs[tab].close()
-                self.tabs.pop(tab)
-            except:
-                pass
-        self.tabs.clear()
-
-        # resetting the timedout flag
-        self.timed_out = False
-
-    def handle_response(self, response, area_number: str):
-        if response.status == 429:
-            self.logger.warning(f"Got rate limited on area {area_number}. Increasing rate limit cooldown "
-                                f"to {self.rate_limit_cooldown + 1}s")
-            self.rate_limit_cooldown += 1
-
     async def reload_tabs(self):
         while True:
             if not self.tabs.keys():
@@ -126,13 +111,9 @@ class AreaSeatingScraper:
                     await asyncio.sleep(1)
                     continue
 
-
-                # respect rate limiting
-                await asyncio.sleep(self.rate_limit_cooldown)
+                tab = self.tabs[area_number]
 
                 #await asyncio.sleep(random.uniform(0, 3))
-
-                tab = self.tabs[area_number]
 
                 self.logger.info(f"Reloading area {area_number} for updates..")
                 await tab.reload()
@@ -152,30 +133,23 @@ class AreaSeatingScraper:
                 try:
                     seats = await scrape_section_data(tab, area_number)
                     self.logger.info(f"Extracted data for section {area_number}")
-                    if seats:
-                        with open(area_number, 'w') as output_file:
-                            output_file.write(str(seats))
-                        await self.data_callback(seats)
+                    if isinstance(seats, dict) and 'adjacentSeats' in seats.keys():
+                        await self.data_callback(seats['adjacentSeats'])
                 except Exception as e:
                     self.logger.error(f"Error in tab {area_number}: {e}")
-                    await tab.close()
+                    await self.proxy_manager.close_tab(tab)
                     self.tabs.pop(area_number)
 
 
 
     async def navigate_to_seating_manifest(self, tab: Page, area_number: str):
         # setting up event handler to check for rate limits
-        tab.on("response", lambda response: self.handle_response(response, area_number))
 
         try:
             await tab.wait_for_selector('ul[id="ticket-type"]')
-            async with tab.expect_navigation() as _:
+            async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000) as _:
 
-                # abiding by the rate limit cooldown
-                self.logger.info("Waiting till rate_limit_cooldown over...")
-                await asyncio.sleep(self.rate_limit_cooldown)
-                self.logger.info("Rate limit cooldown over...")
-
+                if DEBUG: await tab.wait_for_load_state('networkidle')
                 await tab.evaluate(f"chooseSection('{area_number}')")
                 self.logger.info(f"Chosen section {area_number}")
 
@@ -185,6 +159,7 @@ class AreaSeatingScraper:
 
             self.logger.info(f"Selected section {area_number}")
 
+            if DEBUG: await tab.wait_for_load_state('networkidle')
 
             await tab.wait_for_selector("div[id='seatingChart']")
             self.logger.info("Selection complete")
@@ -192,7 +167,7 @@ class AreaSeatingScraper:
 
         except Exception as e:
             self.logger.error(f"Error in monitor_tab for area {area_number}: {e}")
-            await tab.close()
+            await self.proxy_manager.close_tab(tab)
             if tab in self.tabs:
                 self.tabs.pop(area_number)
 
@@ -205,7 +180,7 @@ class AreaSeatingScraper:
         try:
             # waiting for the main captcha body to show up
             await (tab.frame_locator("iframe[src*='recaptcha.net']:not([role='presentation'])").locator("div.rc-imageselect-payload")
-                   .wait_for(timeout=5000))
+                   .wait_for(timeout=10000))
 
             try:
                 #await asyncio.sleep(30)
@@ -232,7 +207,7 @@ class AreaSeatingScraper:
                 self.logger.info("CAPTCHA appears to be resolved")
             except Exception as e:
                 self.logger.error(f"Error waiting for CAPTCHA resolution: {e}. \n Clearing tab..")
-                await tab.close()
+                await self.proxy_manager.close_tab(tab)
                 if tab in self.tabs:
                     self.tabs.pop(area_number)
             finally:
