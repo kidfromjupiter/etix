@@ -113,7 +113,7 @@ class AreaSeatingScraper:
 
                 tab = self.tabs[area_number]
 
-                #await asyncio.sleep(random.uniform(0, 3))
+                await asyncio.sleep(random.uniform(0, 4))
 
                 self.logger.info(f"Reloading area {area_number} for updates..")
                 await tab.reload()
@@ -134,7 +134,8 @@ class AreaSeatingScraper:
                     seats = await scrape_section_data(tab, area_number)
                     self.logger.info(f"Extracted data for section {area_number}")
                     if isinstance(seats, dict) and 'adjacentSeats' in seats.keys():
-                        await self.data_callback(seats['adjacentSeats'])
+                        # event_id will be appended to payload upstream
+                        await self.data_callback({"rows":seats['adjacentSeats'], 'section': area_number})
                 except Exception as e:
                     self.logger.error(f"Error in tab {area_number}: {e}")
                     await self.proxy_manager.close_tab(tab)

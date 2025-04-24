@@ -71,8 +71,8 @@ class EventManager:
 
     async def create_event(self):
         async with aiohttp.ClientSession() as session:
-            async with session.post("http://localhost:8000/event",
-                                    json={"name": self.base_url, "date": str(datetime.datetime.now())}) as response:
+            async with session.post("http://localhost:8000/create-event",
+                                    json={"url": self.base_url}) as response:
                 if response.status != 200:
                     self.logger.warning(f"Creating event failed for url {self.base_url}")
                 else:

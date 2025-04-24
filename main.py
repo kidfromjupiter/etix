@@ -1,13 +1,14 @@
 import json
+import uuid
 from typing import List
 
 import uvicorn
 from fastapi import FastAPI, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
 
-from backend import crud
-from backend.models import Event, Section, Seat, RawEventData
-from backend.schema import RawData, TicketDataIngest, AdjacentSeatsResponse, EventCreate
+#from backend import crud
+from backend.models import Event, Seat, RawEventData
+from backend.schema import SeatingPayload, EventCreateRequest, EventResponse
 from backend.db import SessionLocal, init_db
 import httpx
 
@@ -23,6 +24,8 @@ def get_db():
 
 
 DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1362758832635248760/_tQk6Urjk8qxZksEwHGmXeKdxJDvgMRdmAsVyjWLUsrS9b4-BriCPn2-75MS_lDWkIvD"
+events_db = {}
+seats_db = {}
 
 async def send_to_discord(seat_data: dict):
     message = (
@@ -36,58 +39,75 @@ async def send_to_discord(seat_data: dict):
     async with httpx.AsyncClient() as client:
         await client.post(DISCORD_WEBHOOK_URL, json={"content": message})
 
+    print("Sent data to discord")
+
+
+
+@app.post("/create-event", response_model=EventResponse)
+def create_event(data: EventCreateRequest, db: Session = Depends(get_db)):
+    event_id = str(uuid.uuid4())
+    event = Event(id=event_id, url=data.url)
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    return {"event_id": event_id, "url": data.url}
+
+
 @app.post("/ingest")
-async def ingest_ticket_data(
-        ticket_data: TicketDataIngest,
-        db: Session = Depends(get_db)
-):
-    try:
-        # Convert Pydantic model to dict and add section
-        data_dict = ticket_data.dict()
-        section_name = data_dict.pop('section')
+async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db)):
 
-        # Process the data
-        data=  crud.ingest_ticket_data(db, data_dict, section_name, ticket_data.event_id)
-        async with httpx.AsyncClient() as client:
-            await client.post(DISCORD_WEBHOOK_URL, json={
-                "content": f"🧾 Ingested raw event entries"
-            })
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    event = db.query(Event).filter(Event.id == payload.event_id).first()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
 
-    return {"status": "ok"}
+    new_alerts = []
+
+    for row in payload.rows:
+        for seat_data in row.seats:
+            seat_id = f"{payload.event_id}_{seat_data.seatIdentifier}"
+            seat = db.query(Seat).filter(Seat.id == seat_id).first()
+
+            is_newly_available = (
+                    seat_data.isAvailable and
+                    (not seat or not seat.is_available)
+            )
+
+            if seat:
+                seat.row = seat_data.row
+                seat.seat = seat_data.seat
+                seat.section = payload.section
+                seat.is_available = seat_data.isAvailable
+                seat.price = seat_data.priceNum
+            else:
+                seat = Seat(
+                    id=seat_id,
+                    event_id=payload.event_id,
+                    section=payload.section,
+                    row=seat_data.row,
+                    seat=seat_data.seat,
+                    is_available=seat_data.isAvailable,
+                    price=seat_data.priceNum,
+                )
+                db.add(seat)
+
+            if is_newly_available:
+                new_alerts.append({
+                    "eventUrl": event.url,
+                    "section": payload.section,
+                    "row": seat_data.row,
+                    "seat": seat_data.seat,
+                    "price": seat_data.priceNum
+                })
+
+    db.commit()
+    db.close()
+
+    for alert in new_alerts:
+        await send_to_discord(alert)
+
+    return {"message": f"{len(new_alerts)} new available seats ingested"}
 
 
-@app.get("/event/{event_id}", response_model=List[AdjacentSeatsResponse])
-def get_adjacent_groups(
-        event_id: int,
-        min_seats: int = 2,
-        db: Session = Depends(get_db)
-):
-    """
-    Get dynamically calculated adjacent seat groups for an event.
-    Default minimum group size is 2 seats.
-    """
-    adjacent_groups = crud.calculate_adjacent_seats(db, event_id, min_seats)
-
-    if not adjacent_groups:
-        raise HTTPException(
-            status_code=404,
-            detail=f"No adjacent seat groups found with {min_seats} or more seats"
-        )
-
-    return adjacent_groups
-
-@app.post("/event")
-def create_event(payload: EventCreate, db: Session = Depends(get_db)):
-   event = Event(
-       name=payload.name,
-       date=payload.date,
-   )
-   db.add(event)
-   db.commit()
-   db.refresh(event)
-   return {"status": "event added", "event_id": event.id}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

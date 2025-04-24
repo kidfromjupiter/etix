@@ -2,8 +2,6 @@ from sqlalchemy.orm import Session
 
 from backend.models import EventSeatPricing, Seat, Row, PriceLevel, SeatStatus, Section
 
-from sqlalchemy import func, text
-
 def clear_existing_event_data(db: Session, event_id: int):
     """Delete all seat-related data for an event"""
     # Delete in order to respect foreign key constraints

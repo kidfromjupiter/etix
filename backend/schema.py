@@ -5,10 +5,6 @@ from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional, List
 
-class PriceCode(BaseModel):
-    id: int
-    name: str
-    description: str
 
 class Seat(BaseModel):
     rowIndex: int
@@ -25,17 +21,23 @@ class Seat(BaseModel):
     priceLevelId: str
     price: str
     priceNum: str
-    priceCode: PriceCode
+    priceCode: dict
 
-class RowData(BaseModel):
+class Row(BaseModel):
     row: str
     seats: List[Seat]
-    count: int
-    priceRange: dict  # can define a model if you need stricter validation
 
-class SeatingIngestRequest(BaseModel):
+class SeatingPayload(BaseModel):
+    section: str
+    rows: List[Row]
     event_id: str
-    rows: List[RowData]
+    
+class EventCreateRequest(BaseModel):
+    url: str
+
+class EventResponse(BaseModel):
+    event_id: str
+    url: str
 # used only for debug
 class RawData(RootModel[Any]):
     pass
