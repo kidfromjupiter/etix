@@ -3,6 +3,7 @@ import aiohttp
 import json
 from typing import Dict, Optional
 
+from logger import setup_logger
 
 class Capsolver:
     """
@@ -20,6 +21,8 @@ class Capsolver:
         self.create_task_url = f"{self.base_url}/createTask"
         self.get_result_url = f"{self.base_url}/getTaskResult"
         self.session = None
+        self.logger = setup_logger("CAPSOLVER")
+        self.logger.propagate = False
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession()
@@ -82,16 +85,16 @@ class Capsolver:
                     if data.get("status") == "ready":
                         return data.get("solution")
                     elif data.get("errorId") != 0:
-                        print(f"Error in task: {data.get('errorDescription')}")
+                        self.logger.error(f"Error in task: {data.get('errorDescription')}")
                         return None
 
                     await asyncio.sleep(interval)
             except Exception as e:
-                print(f"Exception in get_task_result: {str(e)}")
+                self.logger.error(f"Exception in get_task_result: {str(e)}")
                 await asyncio.sleep(interval)
                 continue
 
-        print("Task timed out")
+        self.logger.warning("Task timed out")
         return None
 
     async def solve_recaptcha_v2_invisible(self, website_url: str, website_key: str) -> Optional[str]:
@@ -111,19 +114,3 @@ class Capsolver:
             return result.get("gRecaptchaResponse")
         return None
 
-
-# Example usage
-async def main():
-    async with Capsolver("YOUR_API_KEY") as solver:
-        solution = await solver.solve_recaptcha_v2_invisible(
-            website_url="https://site.com",
-            website_key="sitekey"
-        )
-        if solution:
-            print(f"Solved captcha! Response: {solution}")
-        else:
-            print("Failed to solve captcha")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

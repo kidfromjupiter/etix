@@ -14,7 +14,7 @@ import aiohttp
 from proxy_manager import ProxyManager
 
 EVENT_URL = "https://www.etix.com/ticket/p/78414997/alison-krauss-union-station-featuring-jerry-douglas-redding-redding-civic-auditorium?clickref=1011lArps4TX"
-HEADLESS_MODE = False
+HEADLESS_MODE = True
 
 class EventManager:
     def __init__(self, base_url, api_url, proxy_manager):

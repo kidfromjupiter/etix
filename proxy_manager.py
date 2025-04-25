@@ -149,7 +149,8 @@ class ProxyManager:
                 break
 
         if not context:
-            raise ValueError("Page not found in any managed context")
+            self.logger.error("Page not found in any managed context. Probably already closed")
+            return
 
         self.context_to_tabs[context].remove(page)
         await page.close()
@@ -163,7 +164,8 @@ class ProxyManager:
     async def close_context(self, context: BrowserContext) -> None:
         """Close a browser context and clean up tracking."""
         if context not in self.context_to_proxy:
-            raise ValueError("Context not managed by this ProxyManager")
+            self.logger.error("Context not managed by this ProxyManager. Probably already closed")
+            return
 
         # Close all tabs in this context first
         for page in self.context_to_tabs[context][:]:

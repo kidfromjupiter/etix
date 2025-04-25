@@ -18,7 +18,7 @@ from logger import setup_logger
 DEBUG=True
 
 ERROR_URL = "https://etix.com/ticket/online2z/flowError.jsp"
-
+SLOW_NETWORK = True # When true, pauses reloading sites till all contexts are launched. Mainly for debug use
 
 async def get_available_area_numbers(page):
     area_elements = await page.query_selector_all('map[name="EtixOnlineManifestMap"] > area[status="Available"]')
@@ -103,6 +103,12 @@ class AreaSeatingScraper:
 
     async def reload_tabs(self):
         while True:
+
+            if SLOW_NETWORK and not self.initial_spawning_complete:
+                # should not reload if slow network flag is true and initial spawning isn't complete
+                await asyncio.sleep(1)
+                continue
+
             if not self.tabs.keys():
                 await asyncio.sleep(1)
 
