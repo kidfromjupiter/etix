@@ -11,6 +11,11 @@ from backend.models import Event, Seat, RawEventData
 from backend.schema import SeatingPayload, EventCreateRequest, EventResponse
 from backend.db import SessionLocal, init_db
 import httpx
+from os import getenv
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = FastAPI()
 init_db()
@@ -23,7 +28,7 @@ def get_db():
         db.close()
 
 
-DISCORD_WEBHOOK_URL = "https://discord.com/api/webhooks/1362758832635248760/_tQk6Urjk8qxZksEwHGmXeKdxJDvgMRdmAsVyjWLUsrS9b4-BriCPn2-75MS_lDWkIvD"
+DISCORD_WEBHOOK_URL = getenv("DISCORD_WEBHOOK_URL")
 events_db = {}
 seats_db = {}
 

@@ -18,7 +18,7 @@ def setup_logger(name, level=logging.INFO):
         logger.setLevel(level)
 
         # Create console handler
-        handler = logging.StreamHandler()
+        handler = logging.FileHandler('logfile.log')
         handler.setLevel(level)
 
         # Create formatter
@@ -26,6 +26,7 @@ def setup_logger(name, level=logging.INFO):
         handler.setFormatter(formatter)
 
         # Add handler to logger
+
         logger.addHandler(handler)
 
     return logger
