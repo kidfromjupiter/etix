@@ -63,7 +63,7 @@ class EventManager:
 
     async def post_to_fastapi(self, data: dict):
         async with aiohttp.ClientSession() as session:
-            async with session.post("http://localhost:8000/ingest", json={**data, "event_id": self.event_id}) as response:
+            async with session.post("http://localhost:4000/ingest", json={**data, "event_id": self.event_id}) as response:
                 if response.status != 200:
                     self.logger.warning(f"Post failed: {(await response.text())[:50]}...")
                 else:
@@ -71,7 +71,7 @@ class EventManager:
 
     async def create_event(self):
         async with aiohttp.ClientSession() as session:
-            async with session.post("http://localhost:8000/create-event",
+            async with session.post("http://localhost:4000/create-event",
                                     json={"url": self.base_url}) as response:
                 if response.status != 200:
                     self.logger.warning(f"Creating event failed for url {self.base_url}")
@@ -112,7 +112,7 @@ async def main():
             browser, sanitized_proxies
         )
     manager = EventManager(EVENT_URL,
-                           "http://localhost:8000/ingest",
+                           "http://localhost:4000/ingest",
                            proxy_manager
                            )
     lg.info("Browser launched")

@@ -1,3 +1,7 @@
 /venv/
 /.env
 /vm_venv/
+/events.db
+/output_zip.zip
+**/__pycache__/
+/.idea/

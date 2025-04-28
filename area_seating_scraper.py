@@ -15,10 +15,10 @@ from playwright.async_api import Page, TimeoutError
 from capsolver import Capsolver
 from logger import setup_logger
 
-DEBUG=True
+DEBUG=True if getenv("DEBUG") == "True" else False
 
 ERROR_URL = "https://etix.com/ticket/online2z/flowError.jsp"
-SLOW_NETWORK = True # When true, pauses reloading sites till all contexts are launched. Mainly for debug use
+SLOW_NETWORK = True if getenv("SLOW_NETWORK") == "True" else False # When true, pauses reloading sites till all contexts are launched. Mainly for debug use
 
 async def get_available_area_numbers(page):
     area_elements = await page.query_selector_all('map[name="EtixOnlineManifestMap"] > area[status="Available"]')
@@ -53,7 +53,7 @@ class AreaSeatingScraper:
         self.initial_spawning_complete = False
 
     async def spawn_tab(self, area_number):
-
+        
         # waiting till captcha is solved ( if there is )
         await self.captcha_solved_event.wait()
 
@@ -65,7 +65,7 @@ class AreaSeatingScraper:
 
     async def run(self):
         # once off action
-        asyncio.create_task(self.reload_tabs())
+        # asyncio.create_task(self.reload_tabs())
 
         while True:
             await self.page.wait_for_load_state("networkidle")
@@ -101,51 +101,54 @@ class AreaSeatingScraper:
             await asyncio.sleep(random.uniform(30, 60))
             await self.page.reload()
 
-    async def reload_tabs(self):
+    async def reload_tab_and_monitor(self, area_number: str):
         while True:
-
-            if SLOW_NETWORK and not self.initial_spawning_complete:
-                # should not reload if slow network flag is true and initial spawning isn't complete
+            if area_number not in self.ready_areas:
                 await asyncio.sleep(1)
                 continue
 
-            if not self.tabs.keys():
-                await asyncio.sleep(1)
+            tab = self.tabs[area_number]
 
-            for area_number in list(self.tabs.keys()):
-                if area_number not in self.ready_areas:
-                    await asyncio.sleep(1)
-                    continue
+            await asyncio.sleep(random.uniform(0, 4))
 
-                tab = self.tabs[area_number]
-
-                await asyncio.sleep(random.uniform(0, 4))
-
-                self.logger.info(f"Reloading area {area_number} for updates..")
-                await tab.reload()
+            self.logger.info(f"Reloading area {area_number} for updates..")
+            await tab.reload()
 
 
-                # Check for CAPTCHA on reload
-                if await self.check_for_captcha(tab, area_number, first_load=False):
-                    await self.handle_captcha(tab,area_number)
+            # Check for CAPTCHA on reload
+            if await self.check_for_captcha(tab, area_number, first_load=False):
+                await self.handle_captcha(tab,area_number)
 
-                await self.captcha_solved_event.wait()
+            await self.captcha_solved_event.wait()
 
-                current_url = tab.url
-                if current_url == ERROR_URL:
-                    self.timed_out = True
+            current_url = tab.url
+            if current_url == ERROR_URL:
+                self.timed_out = True
 
-                await asyncio.sleep(0)
-                try:
-                    seats = await scrape_section_data(tab, area_number)
-                    self.logger.info(f"Extracted data for section {area_number}")
-                    if isinstance(seats, dict) and 'adjacentSeats' in seats.keys():
-                        # event_id will be appended to payload upstream
-                        await self.data_callback({"rows":seats['adjacentSeats'], 'section': area_number})
-                except Exception as e:
-                    self.logger.error(f"Error in tab {area_number}: {e}")
-                    await self.proxy_manager.close_tab(tab)
-                    self.tabs.pop(area_number)
+            await asyncio.sleep(0)
+            try:
+                seats = await scrape_section_data(tab, area_number)
+                self.logger.info(f"Extracted data for section {area_number}")
+                if isinstance(seats, dict) and 'adjacentSeats' in seats.keys():
+                    # event_id will be appended to payload upstream
+                    await self.data_callback({"rows":seats['adjacentSeats'], 'section': area_number})
+            except Exception as e:
+                self.logger.error(f"Error in tab {area_number}: {e}")
+                await self.proxy_manager.close_tab(tab)
+                self.tabs.pop(area_number)
+
+    #async def reload_tabs(self):
+    #    while True:
+
+    #        if SLOW_NETWORK and not self.initial_spawning_complete:
+    #            # should not reload if slow network flag is true and initial spawning isn't complete
+    #            await asyncio.sleep(1)
+    #            continue
+
+    #        if not self.tabs.keys():
+    #            await asyncio.sleep(1)
+
+    #        for area_number in list(self.tabs.keys()):
 
 
 
@@ -171,6 +174,7 @@ class AreaSeatingScraper:
             await tab.wait_for_selector("div[id='seatingChart']")
             self.logger.info("Selection complete")
             self.ready_areas.append(area_number)
+            asyncio.create_task(self.reload_tab_and_monitor(area_number))
 
         except Exception as e:
             self.logger.error(f"Error in monitor_tab for area {area_number}: {e}")
@@ -182,7 +186,7 @@ class AreaSeatingScraper:
         """Handle CAPTCHA detection and wait for resolution"""
         self.captcha_solved_event.clear()  # This will make all waits block
 
-        self.logger.warning("CAPTCHA detected! Pausing all operations...")
+        self.logger.warning(f"CAPTCHA detected! Pausing operations in {area_number}")
 
         try:
             # waiting for the main captcha body to show up
