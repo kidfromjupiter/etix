@@ -17,9 +17,15 @@ Create and activate python virtual environment inside extracted folder
 Install requirements using `pip install -r requirements.txt` 
 
 **Step 4**
-Run backend using `python main.py`
+Create .env file according to the .env-sample. .env file MUST be name .env instead of .env-sample. 
 
 **Step 5**
+Add/remove proxies to proxy_list
+
+**Step 6**
+Run backend using `python main.py`
+
+**Step 7**
 Run main scraper script using `python EventManager.py`
 
 ---
@@ -34,3 +40,4 @@ At the top of `EventManager.py` there should be a constant named `HEADLESS_MODE`
 **Changing event URL**
 
 At the top of `EventManager.py` there should be a constant named `EVENT_URL`. The value of this constant represents the scraped event url
+
