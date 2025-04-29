@@ -47,10 +47,7 @@ class AreaSeatingScraper:
         self.prev_available_area_numbers = []
         self.captcha_solved_event = asyncio.Event()  # Event to track CAPTCHA resolution
         self.looking_for_captcha_event = asyncio.Event()
-        self.rate_limited_event = asyncio.Event() # Event to check rate limits
-        self.rate_limited_event.set() # no rate limits initially
         self.captcha_solved_event.set()  # Initially set to True (no CAPTCHA)
-        #self.rate_limit_cooldown = 0 # in seconds
         self.ready_areas = []
         self.initial_spawning_complete = False
 
@@ -68,7 +65,6 @@ class AreaSeatingScraper:
     async def run(self):
         # once off action
         asyncio.create_task(self.debug_ui.run())
-        # asyncio.create_task(self.reload_tabs())
 
         while True:
             await self.debug_ui.update_status("main", "Waiting till loading finish..")
@@ -149,20 +145,6 @@ class AreaSeatingScraper:
                 await self.debug_ui.update_status(area_number,f"Error in tab {e[:50]}..." )
                 await self.proxy_manager.close_tab(tab)
                 self.tabs.pop(area_number)
-
-    #async def reload_tabs(self):
-    #    while True:
-
-    #        if SLOW_NETWORK and not self.initial_spawning_complete:
-    #            # should not reload if slow network flag is true and initial spawning isn't complete
-    #            await asyncio.sleep(1)
-    #            continue
-
-    #        if not self.tabs.keys():
-    #            await asyncio.sleep(1)
-
-    #        for area_number in list(self.tabs.keys()):
-
 
 
     async def navigate_to_seating_manifest(self, tab: Page, area_number: str):
