@@ -7,7 +7,7 @@
 These steps differ on operating system used 
 
 **Step 1**
-Extract zip file contents to a folder
+Clone the repository to your local machine
 
 **Step 2**
 Create and activate python virtual environment inside extracted folder
