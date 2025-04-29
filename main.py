@@ -5,6 +5,7 @@ from typing import List
 import uvicorn
 from fastapi import FastAPI, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import select, delete
 
 #from backend import crud
 from backend.models import Event, Seat, RawEventData
@@ -64,12 +65,23 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
     event = db.query(Event).filter(Event.id == payload.event_id).first()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    
+    # Get all current seats for this event
+    current_seats = db.execute(
+        select(Seat).where(Seat.event_id == payload.event_id)
+    ).scalars().all()
+    
+    current_seat_identifiers = {seat.id for seat in current_seats}
+
+    # New seat identifiers from payload
+    incoming_seat_identifiers = set()
 
     new_alerts = []
 
     for row in payload.rows:
         for seat_data in row.seats:
-            seat_id = f"{payload.event_id}_{seat_data.seatIdentifier}"
+            seat_id = f"{payload.event_id}_{payload.section}_{seat_data.seatIdentifier}"
+            incoming_seat_identifiers.add(seat_id)
             seat = db.query(Seat).filter(Seat.id == seat_id).first()
 
             is_newly_available = (
@@ -103,6 +115,13 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
                     "seat": seat_data.seat,
                     "price": seat_data.priceNum
                 })
+
+    # Delete seats that are missing
+    seats_to_delete = current_seat_identifiers - incoming_seat_identifiers
+    if seats_to_delete:
+        db.execute(
+            delete(Seat).where(Seat.id.in_(seats_to_delete), Seat.event_id == payload.event_id, Seat.section == payload.section)
+        )
 
     db.commit()
     db.close()
