@@ -1,14 +1,10 @@
 import asyncio
-import datetime
-import os
 import re
-
-import psutil
 
 from area_seating_scraper import AreaSeatingScraper
 from logger import setup_logger
 import httpx
-from playwright.async_api import async_playwright, Page
+from playwright.async_api import async_playwright
 import aiohttp
 
 from proxy_manager import ProxyManager
