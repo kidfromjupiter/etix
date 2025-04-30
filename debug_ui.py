@@ -20,7 +20,7 @@ class DebugUI:
                 self._draw()
 
     def _draw(self):
-        print("\033c", end="")  # Clear terminal
+        print("\n"*10)  # Clear terminal
         print("===== Status =====")
         for area, status in sorted(self.area_status.items()):
             print(f"{area}: {status}")

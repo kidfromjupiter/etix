@@ -34,9 +34,10 @@ async def scrape_section_data(tab: Page, section: str):
 
 
 class AreaSeatingScraper:
-    def __init__(self, page: Page, data_callback, proxy_manager: ProxyManager):
+    def __init__(self, page: Page, data_callback, proxy_manager: ProxyManager, base_url):
         self.last_rate_limit_time = None
         self.page = page
+        self.base_url = base_url
         self.tabs: dict[str, Page] = {}
         self.timed_out = False
         self.logger = setup_logger("AreaSeatingScraper")
@@ -57,10 +58,26 @@ class AreaSeatingScraper:
         await self.captcha_solved_event.wait()
 
         new_tab: Page = await self.proxy_manager.create_tab()
-        await new_tab.goto(self.page.url)
+        await new_tab.goto(self.base_url) 
+        # url changes to a common URL when seating chart isn't displayed on first load. So 
+        # cant use self.page.url
 
         self.tabs[area_number] = new_tab
         await self.navigate_to_seating_manifest(new_tab, area_number)
+
+    async def look_for_map(self, tab: Page):
+        self.logger.info("Image with usemap not found. Looking for seating chart button")
+        button = await tab.wait_for_selector("a:has-text('Seating Chart')")
+        self.logger.info("Seating chart button found")
+        async with tab.expect_navigation() as _:
+            await button.click()
+            await tab.wait_for_load_state("networkidle")
+            try:
+                await tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000)
+                return True
+            except:
+                self.logger.info("Image with usemap not found. Looking for seating chart button")
+                return False
 
     async def run(self):
         # once off action
@@ -69,6 +86,11 @@ class AreaSeatingScraper:
         while True:
             await self.debug_ui.update_status("main", "Waiting till loading finish..")
             await self.page.wait_for_load_state("networkidle")
+
+            # Some pages don't load the manifest automatically. You need to navigate to it
+            await self.page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) and \
+                await self.seating_chart_selected(self.page)
+            
 
             available_areas = await get_available_area_numbers(self.page)
 
@@ -109,6 +131,7 @@ class AreaSeatingScraper:
 
     async def reload_tab_and_monitor(self, area_number: str):
         while True:
+            #await self.debug_ui.update_status("open tabs", str(self.tabs.keys()))
             if area_number not in self.ready_areas:
                 await asyncio.sleep(1)
                 continue
@@ -142,9 +165,34 @@ class AreaSeatingScraper:
                     await self.data_callback({"rows":seats['adjacentSeats'], 'section': area_number})
             except Exception as e:
                 self.logger.error(f"Error in tab {area_number}: {e}")
-                await self.debug_ui.update_status(area_number,f"Error in tab {e[:50]}..." )
+                await self.debug_ui.update_status(area_number,f"Error in tab {str(e)[:50]}..." )
                 await self.proxy_manager.close_tab(tab)
                 self.tabs.pop(area_number)
+
+    async def seating_chart_selected(self, tab: Page):
+        # Wait for the <ul> element
+        ul = await tab.wait_for_selector('ul#ticket-type')
+
+        # Get all <li> children
+        lis = await ul.query_selector_all('li')
+
+        for li in lis:
+            class_attr = await li.get_attribute('class') or ""
+            # Check if li has the active tab classes
+            if 'ui-state-active' in class_attr and 'ui-tabs-selected' in class_attr:
+                # Check if it contains an <a> with 'Seating Chart'
+                a = await li.query_selector("a:has-text('Seating Chart')")
+                if a:
+                    # Already on the correct tab
+                    break
+                else:
+                    # Not the Seating Chart tab, find and click the correct one
+                    for other_li in lis:
+                        a = await other_li.query_selector("a:has-text('Seating Chart')")
+                        if a:
+                            await a.click()
+                            break
+                break
 
 
     async def navigate_to_seating_manifest(self, tab: Page, area_number: str):
@@ -153,9 +201,15 @@ class AreaSeatingScraper:
         try:
             await self.debug_ui.update_status(area_number,f"Waiting till initial loading complete..." )
             await tab.wait_for_selector('ul[id="ticket-type"]')
-            async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000) as _:
 
-                await tab.wait_for_load_state('networkidle')
+            # Some pages don't load the manifest automatically. You need to navigate to it
+            await self.page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) and \
+                await self.seating_chart_selected(tab)
+
+
+            await tab.wait_for_load_state('networkidle')
+            async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000, wait_until='networkidle') as _:
+
                 await tab.evaluate(f"chooseSection('{area_number}')")
 
                 await self.debug_ui.update_status(area_number,f"Chosen section" )
@@ -179,10 +233,11 @@ class AreaSeatingScraper:
 
         except Exception as e:
             self.logger.error(f"Error in monitor_tab for area {area_number}: {e}")
-            await self.debug_ui.update_status(area_number,f"Error in monitor_tab for area {e[:50]}..." )
+            await self.debug_ui.update_status(area_number,f"Error in monitor_tab for area {str(e)[:50]}..." )
             await self.proxy_manager.close_tab(tab)
-            if tab in self.tabs:
+            if tab in self.tabs.values():
                 self.tabs.pop(area_number)
+            return
 
     async def handle_captcha(self, tab: Page, area_number: str):
         """Handle CAPTCHA detection and wait for resolution"""
@@ -261,6 +316,6 @@ class AreaSeatingScraper:
             return False
         except Exception as e:
             self.logger.error(f"Error checking for CAPTCHA: {e}")
-            await self.debug_ui.update_status(area_number,f"Error checking for CAPTCHA: {e[:50]}..." )
+            await self.debug_ui.update_status(area_number,f"Error checking for CAPTCHA: {str(e)[:50]}..." )
             self.looking_for_captcha_event.set()
             return False

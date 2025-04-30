@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 import uuid
 from typing import List
 
@@ -33,7 +35,15 @@ DISCORD_WEBHOOK_URL = getenv("DISCORD_WEBHOOK_URL")
 events_db = {}
 seats_db = {}
 
+
+last_reset_time = 0
+remaining_requests = 5  # default
+lock = asyncio.Lock()
+
+
 async def send_to_discord(seat_data: dict):
+    global last_reset_time, remaining_requests
+
     message = (
         f"🎟️ **New Seat Available!**\n"
         f"**Event:** {seat_data.get('eventUrl')}\n"
@@ -42,10 +52,32 @@ async def send_to_discord(seat_data: dict):
         f"**Seat:** {seat_data.get('seat')}\n"
         f"**Price:** ${seat_data.get('price')}"
     )
-    async with httpx.AsyncClient() as client:
-        await client.post(DISCORD_WEBHOOK_URL, json={"content": message})
 
-    print("Sent data to discord")
+    async with lock:
+        now = time.time()
+        if remaining_requests == 0 and now < last_reset_time:
+            sleep_for = last_reset_time - now
+            await asyncio.sleep(sleep_for)
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(DISCORD_WEBHOOK_URL, json={"content": message})
+
+            # Parse rate limit headers
+            remaining = response.headers.get("X-RateLimit-Remaining")
+            reset = response.headers.get("X-RateLimit-Reset")
+            retry_after = response.headers.get("Retry-After")
+
+            if remaining is not None:
+                remaining_requests = int(remaining)
+
+            if reset is not None:
+                last_reset_time = float(reset)
+
+            if response.status_code == 429 and retry_after:
+                await asyncio.sleep(float(retry_after))
+
+            if response.status_code >= 400:
+                print("Failed to send message:", response.text)
 
 
 

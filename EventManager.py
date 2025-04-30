@@ -4,12 +4,12 @@ import re
 from area_seating_scraper import AreaSeatingScraper
 from logger import setup_logger
 import httpx
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, Page
 import aiohttp
 
 from proxy_manager import ProxyManager
 
-EVENT_URL = "https://www.etix.com/ticket/p/78414997/alison-krauss-union-station-featuring-jerry-douglas-redding-redding-civic-auditorium?clickref=1011lArps4TX"
+EVENT_URL = "https://etix.com/ticket/p/50757047/the-australian-pink-floyd-show-vip-soundcheck-package-cary-koka-booth-amphitheatre"
 HEADLESS_MODE = True
 
 class EventManager:
@@ -30,14 +30,28 @@ class EventManager:
         self.page = await self.proxy_manager.create_tab()
         await self.create_event()
 
+    async def look_for_map(self, page: Page):
+        self.logger.info("Image with usemap not found. Looking for seating chart button")
+        button = await page.wait_for_selector("a:has-text('Seating Chart')")
+        self.logger.info("Seating chart button found")
+        async with page.expect_navigation() as _:
+            await button.click()
+            await page.wait_for_load_state("networkidle")
+            try:
+                await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000)
+                return True
+            except:
+                self.logger.info("Image with usemap not found. Looking for seating chart button")
+                return False
 
-    async def check_manifest_image(self, page):
+
+    async def check_manifest_image(self, page: Page):
         try:
             await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000)
             return True
         except:
-            self.logger.info("Image with usemap not found.")
-            return False
+            map_found = await self.look_for_map(page)
+            return map_found
 
     async def run_main_monitor(self):
         await self.page.wait_for_selector('ul[id="ticket-type"]')
@@ -53,7 +67,7 @@ class EventManager:
 
         self.logger.info("Manifest image found. Starting main refresh loop...")
 
-        seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager)
+        seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager, self.base_url)
         await seating_scraper.run()
 
 
