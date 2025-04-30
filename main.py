@@ -41,17 +41,9 @@ remaining_requests = 5  # default
 lock = asyncio.Lock()
 
 
-async def send_to_discord(seat_data: dict):
+async def send_to_discord( message):
     global last_reset_time, remaining_requests
 
-    message = (
-        f"🎟️ **New Seat Available!**\n"
-        f"**Event:** {seat_data.get('eventUrl')}\n"
-        f"**Section:** {seat_data.get('section')}\n"
-        f"**Row:** {seat_data.get('row')}\n"
-        f"**Seat:** {seat_data.get('seat')}\n"
-        f"**Price:** ${seat_data.get('price')}"
-    )
 
     async with lock:
         now = time.time()
@@ -158,8 +150,23 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
     db.commit()
     db.close()
 
-    for alert in new_alerts:
-        asyncio.create_task(send_to_discord(alert))
+    if len(new_alerts) <= 4:
+        for alert in new_alerts:
+            message = (
+                f"🎟️ **New Seat Available!**\n"
+                f"**Event:** {alert.get('eventUrl')}\n"
+                f"**Section:** {alert.get('section')}\n"
+                f"**Row:** {alert.get('row')}\n"
+                f"**Seat:** {alert.get('seat')}\n"
+                f"**Price:** ${alert.get('price')}"
+            )
+            asyncio.create_task(send_to_discord(message))
+    else: 
+        message = (
+            f"**Event:** {event.url}"
+            f"Found more than 4 adjacent seats in section {payload.section}"
+            )
+        asyncio.create_task(send_to_discord(message))
 
     return {"message": f"{len(new_alerts)} new available seats ingested"}
 
