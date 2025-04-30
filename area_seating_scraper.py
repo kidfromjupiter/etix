@@ -163,6 +163,8 @@ class AreaSeatingScraper:
                 if isinstance(seats, dict) and 'adjacentSeats' in seats.keys():
                     # event_id will be appended to payload upstream
                     await self.data_callback({"rows":seats['adjacentSeats'], 'section': area_number})
+                    self.logger.info(f"Sent data to backend")
+                    await self.debug_ui.update_status(area_number,"Sent data to backend" )
             except Exception as e:
                 self.logger.error(f"Error in tab {area_number}: {e}")
                 await self.debug_ui.update_status(area_number,f"Error in tab {str(e)[:50]}..." )

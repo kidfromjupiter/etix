@@ -159,11 +159,11 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
     db.close()
 
     for alert in new_alerts:
-        await send_to_discord(alert)
+        asyncio.create_task(send_to_discord(alert))
 
     return {"message": f"{len(new_alerts)} new available seats ingested"}
 
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=4000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=4000, reload=False)
