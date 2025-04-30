@@ -1,5 +1,6 @@
 import asyncio
 from typing import Dict, List, Optional, Tuple
+import httpx
 from playwright.async_api import Browser, BrowserContext, Page, Response
 import time
 
@@ -109,9 +110,15 @@ class ProxyManager:
         # First check for proxies with no contexts
         available_proxies = self._get_available_proxies()
         if available_proxies:
-            # Create context for first available proxy
-            self.logger.info("Found a proxy. Creating context...")
-            return await self._create_context_with_proxy(available_proxies[0])
+            for proxy in available_proxies:
+                if await self.check_proxy(proxy):
+                    # Create context for checked available proxy
+                    self.logger.info("Found a proxy. Creating context...")
+                    return await self._create_context_with_proxy(proxy)
+                else:
+                    # proxy failed check
+                    self.logger.warning(f"Proxy {proxy['server']} not working! Moving to next proxy")
+                    self.proxies.append(self.proxies.pop(self.proxies.index(proxy)))
         else:
             self.logger.warning("No more proxies available!")
 
@@ -217,3 +224,17 @@ class ProxyManager:
                 'max_tabs': self.max_tabs_per_context
             }
         return stats
+
+    async def check_proxy(self, proxy: Dict[str, str]) -> bool:
+        try:
+            async with httpx.AsyncClient(proxy=f"http://{proxy['username']}:{proxy['password']}@{proxy['server'][7:]}", timeout=5) as client:
+                response = await client.get("https://api.ipify.org/?format=json")
+                if response.status_code == 200:
+                    self.logger.info(f"Proxy {proxy['server']} is working. IP: {response.json().get('ip')}")
+                    return True
+                else:
+                    return False
+            return True
+        except Exception as e:
+            self.logger.warning(f"Proxy check failed for {proxy['server']}: {e}")
+            return False
