@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 import httpx
 from playwright.async_api import Browser, BrowserContext, Page, Response
 import time
@@ -45,6 +45,11 @@ class ProxyManager:
 
         # Track tabs in each context
         self.context_to_tabs: Dict[BrowserContext, List[Page]] = {}
+
+        # Preventing race conditions between other tasks requesting proxies that are already being assigned
+        self.proxy_assignment_lock = asyncio.Lock()
+        self.proxies_being_assigned: Set[tuple] = set()
+
 
         self.logger.info("Starting up...")
 
@@ -117,6 +122,12 @@ class ProxyManager:
         available_proxies = self._get_available_proxies()
         if available_proxies:
             for proxy in available_proxies:
+                proxy_key = self._proxy_to_key(proxy)
+
+                async with self.proxy_assignment_lock:
+                    if proxy_key in self.proxies_being_assigned:
+                        continue
+                    self.proxies_being_assigned.add(proxy_key)
                 if await self.check_proxy(proxy):
                     # Create context for checked available proxy
                     self.logger.info("Found a proxy. Creating context...")
