@@ -1,8 +1,10 @@
 import asyncio
+import logging
 from typing import Dict, List, Optional, Tuple
 import httpx
 from playwright.async_api import Browser, BrowserContext, Page, Response
 import time
+from base64 import b64encode
 
 import logger
 
@@ -30,6 +32,10 @@ class ProxyManager:
 
         self.logger = logger.setup_logger("ProxyManager")
         self.logger.propagate = False
+        # Disable httpx logs going to root logger (stdout)
+        httpx_logger = logging.getLogger("httpx")
+        httpx_logger.handlers = [logging.NullHandler()]
+        httpx_logger.propagate = False
 
         # Track contexts and their associated proxies
         self.context_to_proxy: Dict[BrowserContext, Dict[str, str]] = {}
@@ -227,7 +233,8 @@ class ProxyManager:
 
     async def check_proxy(self, proxy: Dict[str, str]) -> bool:
         try:
-            async with httpx.AsyncClient(proxy=f"http://{proxy['username']}:{proxy['password']}@{proxy['server'][7:]}", timeout=5) as client:
+            proxy_url = f"http://{proxy['username']}:{proxy['password']}@{proxy['server'][7:]}"
+            async with httpx.AsyncClient(proxy=proxy_url, timeout=5) as client:
                 response = await client.get("https://api.ipify.org/?format=json")
                 if response.status_code == 200:
                     self.logger.info(f"Proxy {proxy['server']} is working. IP: {response.json().get('ip')}")

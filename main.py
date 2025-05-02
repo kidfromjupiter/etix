@@ -70,6 +70,11 @@ async def send_to_discord( message):
 
             if response.status_code >= 400:
                 print("Failed to send message:", response.text)
+            
+            if response.status_code == 200:
+                print("Sent message to discord")
+            else:
+                print(response.text)
 
 
 
@@ -148,7 +153,6 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
         )
 
     db.commit()
-    db.close()
 
     if len(new_alerts) <= 4:
         for alert in new_alerts:
@@ -163,8 +167,8 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
             asyncio.create_task(send_to_discord(message))
     else: 
         message = (
-            f"**Event:** {event.url}"
-            f"Found more than 4 adjacent seats in section {payload.section}"
+            f"**Event:** {event.url}\n"
+            f"Found {len(new_alerts)} seats in section {payload.section}"
             )
         asyncio.create_task(send_to_discord(message))
 

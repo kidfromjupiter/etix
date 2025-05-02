@@ -2,6 +2,7 @@ import asyncio
 import re
 
 from area_seating_scraper import AreaSeatingScraper
+from debug_ui import DebugUI
 from logger import setup_logger
 import httpx
 from playwright.async_api import async_playwright, Page
@@ -9,16 +10,18 @@ import aiohttp
 
 from proxy_manager import ProxyManager
 
-EVENT_URL = "https://etix.com/ticket/p/50757047/the-australian-pink-floyd-show-vip-soundcheck-package-cary-koka-booth-amphitheatre"
+EVENT_URL = "https://www.etix.com/ticket/p/61485410/ludacris-with-special-guestsbow-wow-bone-thugsnharmony-albuquerque-sandia-casino-amphitheater"
 HEADLESS_MODE = True
 
 class EventManager:
-    def __init__(self, base_url, api_url, proxy_manager):
+    def __init__(self, base_url, api_url, proxy_manager, debug_ui, network_sem):
         self.playwright = None
         self.base_url = base_url
         self.api_url = api_url
+        self.network_sem = network_sem
         self.context = None
         self.page = None
+        self.debug_ui = debug_ui
         self.logger = setup_logger("EventManager")
         self.logger.propagate = False
         self.client = httpx.AsyncClient()
@@ -67,7 +70,7 @@ class EventManager:
 
         self.logger.info("Manifest image found. Starting main refresh loop...")
 
-        seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager, self.base_url)
+        seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager, self.base_url, self.debug_ui, self.network_sem)
         await seating_scraper.run()
 
 
@@ -106,6 +109,7 @@ async def main():
     lg.info("Launching browser...")
     playwright = await async_playwright().start()
     browser = await playwright.chromium.launch(headless=HEADLESS_MODE)
+    debug_ui = DebugUI()
 
     with open("proxy_list") as proxy_list:
         proxies = proxy_list.readlines()
@@ -123,7 +127,9 @@ async def main():
         )
     manager = EventManager(EVENT_URL,
                            "http://localhost:4000/ingest",
-                           proxy_manager
+                           proxy_manager,
+                            debug_ui
+
                            )
     lg.info("Browser launched")
     await manager.run()
