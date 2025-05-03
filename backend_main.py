@@ -177,4 +177,4 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=4000, reload=False)
+    uvicorn.run("backend_main:app", host="127.0.0.1", port=4000, reload=False)

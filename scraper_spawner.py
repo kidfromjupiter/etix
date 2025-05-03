@@ -5,12 +5,15 @@ from debug_ui import DebugUI
 from logger import setup_logger
 from proxy_manager import ProxyManager
 from playwright.async_api import async_playwright, Page
+from dotenv import load_dotenv
+
+load_dotenv()
 
 EVENT_URL = "https://www.etix.com/ticket/p/61485410/ludacris-with-special-guestsbow-wow-bone-thugsnharmony-albuquerque-sandia-casino-amphitheater"
 HEADLESS_MODE = True
 
 def wrapper(event_url: str, proxy_manager: ProxyManager, debug_ui: DebugUI, loading_lock: asyncio.Semaphore):
-    manager = EventManager(event_url, "http://localhost:4000/ingest",
+    manager = EventManager(event_url,
                        proxy_manager,
                        debug_ui,
                        loading_lock

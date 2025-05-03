@@ -16,7 +16,6 @@ from logger import setup_logger
 DEBUG=True if getenv("DEBUG") == "True" else False
 
 ERROR_URL = "https://etix.com/ticket/online2z/flowError.jsp"
-SLOW_NETWORK = True if getenv("SLOW_NETWORK") == "True" else False # When true, pauses reloading sites till all contexts are launched. Mainly for debug use
 
 async def get_available_area_numbers(page):
     area_elements = await page.query_selector_all('map[name="EtixOnlineManifestMap"] > area[status="Available"]')
@@ -49,6 +48,7 @@ class AreaSeatingScraper:
         self.captcha_solved_event.set()  # Initially set to True (no CAPTCHA)
         self.ready_areas = []
         self.initial_spawning_complete = False
+        self.section_blacklist = [] # sections that should not be respawned
 
     async def spawn_tab(self, area_number):
         # waiting till captcha is solved ( if there is )
@@ -92,8 +92,9 @@ class AreaSeatingScraper:
             available_areas = await get_available_area_numbers(self.page)
 
             for area_number in available_areas:
-                if area_number not in self.tabs.keys() and self.initial_spawning_complete:
-                    # probably was closed due to some exception. Should restart
+                if (area_number not in self.tabs.keys() and self.initial_spawning_complete 
+                    and area_number not in self.section_blacklist):
+                    # probably was closed due to some exception and not in section blacklist. Should restart
                     self.logger.warning(f"Respawning previously closed tab {area_number}")
                     await self.spawn_tab(area_number)
 
@@ -212,16 +213,29 @@ class AreaSeatingScraper:
 
             await tab.wait_for_load_state('networkidle')
             async with self.network_sem:
-                async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000, wait_until='networkidle') as _:
+                try:
+                    async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000, wait_until='networkidle') as _:
 
-                    await tab.evaluate(f"chooseSection('{area_number}')")
+                        await tab.evaluate(f"chooseSection('{area_number}')")
 
-                    await self.debug_ui.update_status(self.base_url,area_number,f"Chosen section" )
-                    self.logger.info(f"Chosen section {area_number}")
+                        await self.debug_ui.update_status(self.base_url,area_number,f"Chosen section" )
+                        self.logger.info(f"Chosen section {area_number}")
 
-                    # Check for CAPTCHA after selection
-                    if await self.check_for_captcha(tab, area_number):
-                        await self.handle_captcha(tab, area_number)
+                        # Check for CAPTCHA after selection
+                        if await self.check_for_captcha(tab, area_number):
+                            await self.handle_captcha(tab, area_number)
+                except TimeoutError:
+                    # Maybe this is a general admission section?
+                    try:
+                        if await tab.wait_for_selector('div[aria-describedby="gaSectionAddSeat_dialog"]'):
+                            self.logger.info("This is a ga section. Adding to section blacklist...")
+                            await self.debug_ui.update_status(self.base_url,area_number,f"GA section. Adding to section blacklist" )
+                            self.section_blacklist.append(area_number)
+                            await self.proxy_manager.close_tab(tab)
+                            if tab in self.tabs.values():
+                                self.tabs.pop(area_number)
+                            return
+                    except Exception as e: raise e
 
             self.logger.info(f"Selected section {area_number}")
 
@@ -277,13 +291,22 @@ class AreaSeatingScraper:
                         self.logger.info("Failed to solve captcha")
                         await self.debug_ui.update_status(self.base_url,area_number,f"Failed to solve captcha" )
 
-                # waiting for seating chart to appear
-                await tab.wait_for_selector('div#seatingChart')
+                try:
+                    # waiting for seating chart to appear
+                    await tab.wait_for_selector('div#seatingChart')
+                except TimeoutError: 
+                    # Maybe this is a general admission section?
+                    try:
+                        if await tab.locator('div[aria-describedby="gaSectionAddSeat_dialog"]').wait_for():
+                            self.logger.info("This is a ga section. Adding to section blacklist...")
+                            await self.debug_ui.update_status(self.base_url,area_number,f"GA section. Adding to section blacklist" )
+                            self.section_blacklist.append(area_number)
+                    except Exception as e: raise e
 
                 self.logger.info("CAPTCHA appears to be resolved")
                 await self.debug_ui.update_status(self.base_url,area_number,f"CAPTCHA appears to be resolved" )
             except Exception as e:
-                self.logger.error(f"Error waiting for CAPTCHA resolution: {e}. \n Clearing tab..")
+                self.logger.error(f"Error waiting for CAPTCHA resolution: {e}. \n Clearing tab {area_number}..")
                 await self.debug_ui.update_status(self.base_url,area_number,f"Error waiting for CAPTCHA resolution: {e}. \n Clearing tab.." )
                 await self.proxy_manager.close_tab(tab)
                 if tab in self.tabs:
@@ -293,7 +316,7 @@ class AreaSeatingScraper:
                 await self.debug_ui.update_status(self.base_url,area_number,f"Resuming operations.." )
                 self.captcha_solved_event.set()  # Resume operations
         except TimeoutError:
-            self.logger.info("Captcha wasn't fully launched. Resuming operations")
+            self.logger.info(f"Captcha wasn't fully launched. Resuming operations on {area_number}")
             await self.debug_ui.update_status(self.base_url,area_number,f"Captcha wasn't fully launched. Resuming operations" )
             self.captcha_solved_event.set()  # Resume operations
 

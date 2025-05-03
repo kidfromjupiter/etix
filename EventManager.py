@@ -1,5 +1,6 @@
 import asyncio
 import re
+from os import getenv
 
 from area_seating_scraper import AreaSeatingScraper
 from debug_ui import DebugUI
@@ -7,6 +8,9 @@ from logger import setup_logger
 import httpx
 from playwright.async_api import async_playwright, Page
 import aiohttp
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from proxy_manager import ProxyManager
 
@@ -14,10 +18,9 @@ EVENT_URL = "https://www.etix.com/ticket/p/61485410/ludacris-with-special-guests
 HEADLESS_MODE = True
 
 class EventManager:
-    def __init__(self, base_url, api_url, proxy_manager, debug_ui, network_sem):
+    def __init__(self, base_url,  proxy_manager, debug_ui, network_sem):
         self.playwright = None
         self.base_url = base_url
-        self.api_url = api_url
         self.network_sem = network_sem
         self.context = None
         self.page = None
@@ -76,7 +79,7 @@ class EventManager:
 
     async def post_to_fastapi(self, data: dict):
         async with aiohttp.ClientSession() as session:
-            async with session.post("http://localhost:4000/ingest", json={**data, "event_id": self.event_id}) as response:
+            async with session.post(f"{getenv("BACKEND_BASEURL", "http://localhost:4000")}/ingest", json={**data, "event_id": self.event_id}) as response:
                 if response.status != 200:
                     self.logger.warning(f"Post failed: {(await response.text())[:50]}...")
                 else:
@@ -84,7 +87,7 @@ class EventManager:
 
     async def create_event(self):
         async with aiohttp.ClientSession() as session:
-            async with session.post("http://localhost:4000/create-event",
+            async with session.post(f"{getenv("BACKEND_BASEURL", "http://localhost:4000")}/create-event",
                                     json={"url": self.base_url}) as response:
                 if response.status != 200:
                     self.logger.warning(f"Creating event failed for url {self.base_url}")
@@ -126,7 +129,6 @@ async def main():
             browser, sanitized_proxies
         )
     manager = EventManager(EVENT_URL,
-                           "http://localhost:4000/ingest",
                            proxy_manager,
                             debug_ui
 
