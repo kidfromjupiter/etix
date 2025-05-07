@@ -60,26 +60,29 @@ class EventManager:
             return map_found
 
     async def run_main_monitor(self):
-        await self.page.wait_for_selector('ul[id="ticket-type"]')
-        if not await self.check_manifest_image(self.page):
-            self.logger.info("Manifest image not found. Checking for seating canvas...")
-            if await self.page.locator('div#seatingMap canvas').count() > 0:
-                self.logger.info("Seating canvas found")
+        try:
+            await self.page.wait_for_selector('ul[id="ticket-type"]')
+            if not await self.check_manifest_image(self.page):
+                self.logger.info("Manifest image not found. Checking for seating canvas...")
+                if await self.page.locator('div#seatingMap canvas').count() > 0:
+                    self.logger.info("Seating canvas found")
 
-            else:
-                self.logger.info("seating canvas not found.. Exiting")
-                return
+                else:
+                    self.logger.info("seating canvas not found.. Exiting")
+                    return
 
 
-        self.logger.info("Manifest image found. Starting main refresh loop...")
+            self.logger.info("Manifest image found. Starting main refresh loop...")
 
-        seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager, self.base_url, self.debug_ui, self.network_sem)
-        await seating_scraper.run()
+            seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager, self.base_url, self.debug_ui, self.network_sem)
+            await seating_scraper.run()
+        except Exception as e:
+            self.logger.error(f"Something went wrong with event {self.base_url}: {e}")
 
 
     async def post_to_fastapi(self, data: dict):
         async with aiohttp.ClientSession() as session:
-            async with session.post(f"{getenv("BACKEND_BASEURL", "http://localhost:4000")}/ingest", json={**data, "event_id": self.event_id}) as response:
+            async with session.post(f"{getenv('BACKEND_BASEURL', 'http://localhost:4000')}/ingest", json={**data, "event_id": self.event_id}) as response:
                 if response.status != 200:
                     self.logger.warning(f"Post failed: {(await response.text())[:50]}...")
                 else:
@@ -87,7 +90,7 @@ class EventManager:
 
     async def create_event(self):
         async with aiohttp.ClientSession() as session:
-            async with session.post(f"{getenv("BACKEND_BASEURL", "http://localhost:4000")}/create-event",
+            async with session.post(f"{getenv('BACKEND_BASEURL', 'http://localhost:4000')}/create-event",
                                     json={"url": self.base_url}) as response:
                 if response.status != 200:
                     self.logger.warning(f"Creating event failed for url {self.base_url}")

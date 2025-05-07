@@ -1,9 +1,7 @@
 import asyncio
-import json
 import time
 import uuid
-from typing import List
-
+import re
 import uvicorn
 from fastapi import FastAPI, Depends, Request, HTTPException
 from sqlalchemy.orm import Session
@@ -80,12 +78,22 @@ async def send_to_discord( message):
 
 @app.post("/create-event", response_model=EventResponse)
 def create_event(data: EventCreateRequest, db: Session = Depends(get_db)):
-    event_id = str(uuid.uuid4())
-    event = Event(id=event_id, url=data.url)
-    db.add(event)
-    db.commit()
-    db.refresh(event)
-    return {"event_id": event_id, "url": data.url}
+    match = re.search(r'/([\d]+)/', data.url)
+    if not match:
+        raise HTTPException(status_code=422, detail="No event ID found in URL")
+
+    event_id = match.group(1)
+
+    # Try to get existing event
+    event = db.query(Event).filter_by(id=event_id).first()
+
+    if not event:
+        event = Event(id=event_id, url=data.url)
+        db.add(event)
+        db.commit()
+        db.refresh(event)
+
+    return {"event_id": event.id, "url": event.url}
 
 
 @app.post("/ingest")
