@@ -88,7 +88,7 @@ def create_event(data: EventCreateRequest, db: Session = Depends(get_db)):
     event = db.query(Event).filter_by(id=event_id).first()
 
     if not event:
-        event = Event(id=event_id, url=data.url)
+        event = Event(id=event_id, url=data.url, time=data.time)
         db.add(event)
         db.commit()
         db.refresh(event)
@@ -147,6 +147,7 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
             if is_newly_available:
                 new_alerts.append({
                     "eventUrl": event.url,
+                    "eventTime": event.time,
                     "section": payload.section,
                     "row": seat_data.row,
                     "seat": seat_data.seat,
@@ -167,6 +168,7 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
             message = (
                 f"🎟️ **New Seat Available!**\n"
                 f"**Event:** {alert.get('eventUrl')}\n"
+                f"**Time:** {alert.get('eventTime')}\n"
                 f"**Section:** {alert.get('section')}\n"
                 f"**Row:** {alert.get('row')}\n"
                 f"**Seat:** {alert.get('seat')}\n"
@@ -176,6 +178,7 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
     else: 
         message = (
             f"**Event:** {event.url}\n"
+            f"**Time:** {alert.get('eventTime')}\n"
             f"Found {len(new_alerts)} seats in section {payload.section}"
             )
         asyncio.create_task(send_to_discord(message))

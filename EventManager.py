@@ -1,4 +1,5 @@
 import asyncio
+from datetime import datetime
 import re
 from os import getenv
 
@@ -34,7 +35,6 @@ class EventManager:
 
     async def init_browser(self):
         self.page = await self.proxy_manager.create_tab()
-        await self.create_event()
 
     async def look_for_map(self, page: Page):
         self.logger.info("Image with usemap not found. Looking for seating chart button")
@@ -59,6 +59,22 @@ class EventManager:
             map_found = await self.look_for_map(page)
             return map_found
 
+    async def get_event_time(self, page: Page):
+        try:
+            time_div = await page.wait_for_selector("div[class='time']")
+            time_string = await time_div.inner_text()
+            matches = re.search(r'\b[A-Z][a-z]+ \d+, \d+ \d+:\d+ [A|P]M',time_string)
+            if matches:
+                formatted_time = datetime.strptime(matches.group(), "%B %d, %Y %I:%M %p")
+                iso_time = formatted_time.isoformat()
+                return iso_time
+            else: 
+                self.logger.warning(f"Couldn't get time for event {self.base_url}. No matches for time found!. Time string returned: {time_string}")
+                return None
+        except Exception as e: 
+            self.logger.error(f"Couldn't get time for event {self.base_url}: {e}")
+            return None
+
     async def run_main_monitor(self):
         try:
             await self.page.wait_for_selector('ul[id="ticket-type"]')
@@ -74,6 +90,9 @@ class EventManager:
 
             self.logger.info("Manifest image found. Starting main refresh loop...")
 
+            time_str = await self.get_event_time(self.page)
+
+            await self.create_event(time_str)
             seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager, self.base_url, self.debug_ui, self.network_sem)
             await seating_scraper.run()
         except Exception as e:
@@ -88,10 +107,10 @@ class EventManager:
                 else:
                     self.logger.info(f"Successfully posted data to webserver")
 
-    async def create_event(self):
+    async def create_event(self, time):
         async with aiohttp.ClientSession() as session:
             async with session.post(f"{getenv('BACKEND_BASEURL', 'http://localhost:4000')}/create-event",
-                                    json={"url": self.base_url}) as response:
+                                    json={"url": self.base_url, "time": time}) as response:
                 if response.status != 200:
                     self.logger.warning(f"Creating event failed for url {self.base_url}")
                 else:
