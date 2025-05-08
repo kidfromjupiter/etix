@@ -61,7 +61,10 @@ class AreaSeatingScraper:
             # url changes to a common URL when seating chart isn't displayed on first load. So 
             # cant use self.page.url
             await self.debug_ui.update_status(self.base_url,area_number,f"Waiting till initial loading complete..." )
-            await new_tab.wait_for_selector('ul[id="ticket-type"]')
+            try:
+                await new_tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]') 
+            except TimeoutError:
+                await new_tab.wait_for_selector('ul[id="ticket-type"]')
 
 
         self.tabs[area_number] = new_tab
@@ -127,8 +130,6 @@ class AreaSeatingScraper:
 
             tab = self.tabs[area_number]
 
-            await asyncio.sleep(random.uniform(0, 4))
-
             self.logger.info(f"Reloading area {area_number} for updates..")
             await self.debug_ui.update_status(self.base_url,area_number,"Reloading area for updates.." )
 
@@ -171,32 +172,35 @@ class AreaSeatingScraper:
 
     async def seating_chart_selected(self, tab: Page):
 
-        # Wait for the <ul> element
-        ul = await tab.wait_for_selector('ul#ticket-type')
+        try:
+            await tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
+        except:
+            # Wait for the <ul> element
+            ul = await tab.wait_for_selector('ul#ticket-type')
 
-        # Get all <li> children
-        lis = await ul.query_selector_all('li')
+            # Get all <li> children
+            lis = await ul.query_selector_all('li')
 
-        for li in lis:
-            class_attr = await li.get_attribute('class') or ""
-            # Check if li has the active tab classes
-            if 'ui-state-active' in class_attr and 'ui-tabs-selected' in class_attr:
-                # Check if it contains an <a> with 'Seating Chart'
-                a = await li.query_selector("a:has-text('Seating Chart')")
-                if a:
-                    # Already on the correct tab
+            for li in lis:
+                class_attr = await li.get_attribute('class') or ""
+                # Check if li has the active tab classes
+                if 'ui-state-active' in class_attr and 'ui-tabs-selected' in class_attr:
+                    # Check if it contains an <a> with 'Seating Chart'
+                    a = await li.query_selector("a:has-text('Seating Chart')")
+                    if a:
+                        # Already on the correct tab
+                        break
+                    else:
+                        # Not the Seating Chart tab, find and click the correct one
+                        for other_li in lis:
+                            a = await other_li.query_selector("a:has-text('Seating Chart')")
+                            if a:
+                                async with self.network_sem:
+                                    await a.click()
+                                    await tab.wait_for_load_state('networkidle')
+                                    await tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
+                                break
                     break
-                else:
-                    # Not the Seating Chart tab, find and click the correct one
-                    for other_li in lis:
-                        a = await other_li.query_selector("a:has-text('Seating Chart')")
-                        if a:
-                            async with self.network_sem:
-                                await a.click()
-                                await tab.wait_for_load_state('networkidle')
-                                await self.page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
-                            break
-                break
 
     async def navigate_to_seating_manifest(self, tab: Page, area_number: str):
         # setting up event handler to check for rate limits

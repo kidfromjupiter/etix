@@ -54,7 +54,7 @@ class EventManager:
 
     async def check_manifest_image(self, page: Page):
         try:
-            await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000)
+            await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]')
             return True
         except:
             map_found = await self.look_for_map(page)
@@ -79,7 +79,6 @@ class EventManager:
     async def run_main_monitor(self):
         try:
             async with self.network_sem: 
-                await self.page.wait_for_selector('ul[id="ticket-type"]')
                 if not await self.check_manifest_image(self.page):
                     self.logger.info("Manifest image not found. Checking for seating canvas...")
                     if await self.page.locator('div#seatingMap canvas').count() > 0:
