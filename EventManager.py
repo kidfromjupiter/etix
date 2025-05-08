@@ -44,7 +44,6 @@ class EventManager:
         self.logger.info("Seating chart button found")
         async with page.expect_navigation() as _:
             await button.click()
-            await page.wait_for_load_state("networkidle")
             try:
                 await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000)
                 return True

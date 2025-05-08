@@ -70,11 +70,11 @@ class AreaSeatingScraper:
             # cant use self.page.url
             await self.debug_ui.update_status(self.base_url,area_number,f"Waiting till initial loading complete..." )
             try:
-                await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: checking for map" )
+                await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: checking for map " )
                 await new_tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
             except TimeoutError:
                 #await new_tab.screenshot(path=f"./no_map/{random.randint(0,1000)}.jpg", full_page=True)
-                await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: no map, checking for ticket type header" )
+                await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: no map, checking for ticket type " )
                 await new_tab.wait_for_selector('ul[id="ticket-type"]')
 
 
@@ -232,7 +232,7 @@ class AreaSeatingScraper:
                         if tab in self.tabs.values():
                             self.tabs.pop(area_number)
                         return
-                    async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000, wait_until='networkidle') as _:
+                    async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000) as _:
                         await wait_for_function(tab, 'chooseSection')
 
 

@@ -204,44 +204,6 @@ class ProxyManager:
 
         await context.close()
 
-    def get_context_for_tab(self, page: Page) -> BrowserContext:
-        """Get the context containing a specific tab."""
-        for context, tabs in self.context_to_tabs.items():
-            if page in tabs:
-                return context
-        raise ValueError("Page not found in any managed context")
-
-    def get_all_tabs(self) -> List[Page]:
-        """Get all tabs across all contexts."""
-        return [tab for tabs in self.context_to_tabs.values() for tab in tabs]
-
-    def get_tabs_for_proxy(self, proxy: Dict[str, str]) -> List[Page]:
-        """Get all tabs using a specific proxy."""
-        proxy_key = self._proxy_to_key(proxy)
-        if proxy_key not in self.proxy_to_contexts:
-            return []
-
-        tabs = []
-        for context in self.proxy_to_contexts[proxy_key]:
-            tabs.extend(self.context_to_tabs[context])
-        return tabs
-
-    def get_proxy_for_tab(self, page: Page) -> Dict[str, str]:
-        """Get the proxy being used by a specific tab."""
-        context = self.get_context_for_tab(page)
-        return self.context_to_proxy[context]
-
-    def get_context_stats(self) -> Dict[str, Dict]:
-        """Get statistics about all contexts."""
-        stats = {}
-        for context, proxy in self.context_to_proxy.items():
-            stats[f"context_{id(context)}"] = {
-                'proxy': proxy,
-                'tabs': len(self.context_to_tabs[context]),
-                'max_tabs': self.max_tabs_per_context
-            }
-        return stats
-
     async def check_proxy(self, proxy: Dict[str, str]) -> bool:
         try:
             proxy_url = f"http://{proxy['username']}:{proxy['password']}@{proxy['server'][7:]}"
