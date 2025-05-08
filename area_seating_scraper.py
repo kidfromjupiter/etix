@@ -222,10 +222,20 @@ class AreaSeatingScraper:
 
 
             async with self.network_sem:
-                try:
+                    await wait_for_function(tab, "isGASection")
+                    if await tab.evaluate(f"isGASection('{area_number}')"):
+                        #this is a general admission section
+                        self.logger.info("This is a ga section. Adding to section blacklist...")
+                        await self.debug_ui.update_status(self.base_url,area_number,f"GA section. Adding to section blacklist" )
+                        self.section_blacklist.append(area_number)
+                        await self.proxy_manager.close_tab(tab)
+                        if tab in self.tabs.values():
+                            self.tabs.pop(area_number)
+                        return
                     async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000, wait_until='networkidle') as _:
-
                         await wait_for_function(tab, 'chooseSection')
+
+
                         await tab.evaluate(f"chooseSection('{area_number}')")
 
                         await self.debug_ui.update_status(self.base_url,area_number,f"Chosen section" )
@@ -234,23 +244,10 @@ class AreaSeatingScraper:
                         # Check for CAPTCHA after selection
                         if await self.check_for_captcha(tab, area_number):
                             await self.handle_captcha(tab, area_number)
-                except TimeoutError:
-                    # Maybe this is a general admission section?
-                    try:
-                        if await tab.wait_for_selector('div[aria-describedby="gaSectionAddSeat_dialog"]'):
-                            self.logger.info("This is a ga section. Adding to section blacklist...")
-                            await self.debug_ui.update_status(self.base_url,area_number,f"GA section. Adding to section blacklist" )
-                            self.section_blacklist.append(area_number)
-                            await self.proxy_manager.close_tab(tab)
-                            if tab in self.tabs.values():
-                                self.tabs.pop(area_number)
-                            return
-                    except Exception as e: raise e
 
             self.logger.info(f"Selected section {area_number}")
 
             await self.debug_ui.update_status(self.base_url,area_number,f"Waiting till loading manifest" )
-            if DEBUG: await tab.wait_for_load_state('networkidle')
 
             await tab.wait_for_selector("div[id='seatingChart']")
 
@@ -301,17 +298,9 @@ class AreaSeatingScraper:
                         self.logger.info("Failed to solve captcha")
                         await self.debug_ui.update_status(self.base_url,area_number,f"Failed to solve captcha" )
 
-                try:
-                    # waiting for seating chart to appear
-                    await tab.wait_for_selector('div#seatingChart')
-                except TimeoutError: 
-                    # Maybe this is a general admission section?
-                    try:
-                        if await tab.locator('div[aria-describedby="gaSectionAddSeat_dialog"]').wait_for():
-                            self.logger.info("This is a ga section. Adding to section blacklist...")
-                            await self.debug_ui.update_status(self.base_url,area_number,f"GA section. Adding to section blacklist" )
-                            self.section_blacklist.append(area_number)
-                    except Exception as e: raise e
+                
+                # waiting for seating chart to appear
+                await tab.wait_for_selector('div#seatingChart')
 
                 self.logger.info("CAPTCHA appears to be resolved")
                 await self.debug_ui.update_status(self.base_url,area_number,f"CAPTCHA appears to be resolved" )
