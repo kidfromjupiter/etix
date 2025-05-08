@@ -60,34 +60,21 @@ class AreaSeatingScraper:
             await new_tab.goto(self.base_url) 
             # url changes to a common URL when seating chart isn't displayed on first load. So 
             # cant use self.page.url
+            await self.debug_ui.update_status(self.base_url,area_number,f"Waiting till initial loading complete..." )
+            await new_tab.wait_for_selector('ul[id="ticket-type"]')
+
 
         self.tabs[area_number] = new_tab
         await self.navigate_to_seating_manifest(new_tab, area_number)
 
-    async def look_for_map(self, tab: Page):
-        self.logger.info("Image with usemap not found. Looking for seating chart button")
-        button = await tab.wait_for_selector("a:has-text('Seating Chart')")
-        self.logger.info("Seating chart button found")
-        async with tab.expect_navigation() as _:
-            await button.click()
-            await tab.wait_for_load_state("networkidle")
-            try:
-                await tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000)
-                return True
-            except:
-                self.logger.info("Image with usemap not found. Looking for seating chart button")
-                return False
-
     async def run(self):
 
-        while True:
-            await self.debug_ui.update_status(self.base_url,"main", "Waiting till loading finish..")
-            await self.page.wait_for_load_state("networkidle")
+        await self.debug_ui.update_status(self.base_url,"main", "Waiting till loading finish..")
+        await self.page.wait_for_load_state("networkidle")
 
+        while True:
             # Some pages don't load the manifest automatically. You need to navigate to it
-            await self.page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) and \
-                await self.seating_chart_selected(self.page)
-            
+            await self.seating_chart_selected(self.page)
 
             available_areas = await get_available_area_numbers(self.page)
 
@@ -128,6 +115,8 @@ class AreaSeatingScraper:
 
             async with self.network_sem:
                 await self.page.reload()
+                await self.debug_ui.update_status(self.base_url,"main", "Waiting till reloading finish..")
+                await self.page.wait_for_load_state("networkidle")
 
     async def reload_tab_and_monitor(self, area_number: str):
         while True:
@@ -144,7 +133,14 @@ class AreaSeatingScraper:
             await self.debug_ui.update_status(self.base_url,area_number,"Reloading area for updates.." )
 
             async with self.network_sem:
-                await tab.reload()
+                try:
+                    await tab.reload()
+                except TimeoutError:
+                    self.logger.error(f"Got timeout error in reload. Try reducing the concurrency semaphore.\n"
+                                      f"Section: {area_number}, event: {self.base_url}.")
+                    self.debug_ui.update_status(self.base_url, area_number, f"Got timeout error in reload."
+                                                f"Try reducing the concurrency semaphore.")
+                    continue # try going for another round
 
 
             # Check for CAPTCHA on reload
@@ -174,6 +170,7 @@ class AreaSeatingScraper:
                 self.tabs.pop(area_number)
 
     async def seating_chart_selected(self, tab: Page):
+
         # Wait for the <ul> element
         ul = await tab.wait_for_selector('ul#ticket-type')
 
@@ -196,6 +193,8 @@ class AreaSeatingScraper:
                         if a:
                             async with self.network_sem:
                                 await a.click()
+                                await tab.wait_for_load_state('networkidle')
+                                await self.page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
                             break
                 break
 
@@ -203,15 +202,10 @@ class AreaSeatingScraper:
         # setting up event handler to check for rate limits
 
         try:
-            await self.debug_ui.update_status(self.base_url,area_number,f"Waiting till initial loading complete..." )
-            await tab.wait_for_selector('ul[id="ticket-type"]')
-
             # Some pages don't load the manifest automatically. You need to navigate to it
-            await self.page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) and \
-                await self.seating_chart_selected(tab)
+            await self.seating_chart_selected(tab)
 
 
-            await tab.wait_for_load_state('networkidle')
             async with self.network_sem:
                 try:
                     async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000, wait_until='networkidle') as _:

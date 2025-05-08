@@ -1,47 +1,75 @@
-from collections import defaultdict
+from textual.app import App, ComposeResult
+from textual.widgets import TabbedContent, TabPane, DataTable, Header, Footer
+from textual.containers import Container
+from textual.reactive import reactive
 from datetime import datetime
+from collections import defaultdict
 import asyncio
-from rich.console import Console
-from rich.table import Table
-from rich.live import Live
 
-class DebugUI:
+class EventTab(TabPane):
+    def __init__(self, event_id: str):
+        truncated_name = (event_id[30:67] + "...") if len(event_id) > 40 else event_id
+        super().__init__(truncated_name)
+        self.event_id = event_id
+        self.table = DataTable(zebra_stripes=True)
+        self.table.add_columns("Area", "Status", "Last Updated")
+
+    def compose(self) -> ComposeResult:
+        yield self.table
+
+    def update_table(self, areas: dict):
+        self.table.clear()
+        now = datetime.now()
+        for area, (status, timestamp) in sorted(areas.items()):
+            seconds_ago = int((now - timestamp).total_seconds())
+            self.table.add_row(str(area), status, f"{seconds_ago}s ago")
+
+class DebugUI(App):
+    CSS_PATH = None
+    BINDINGS = [
+        ("q", "quit", "Quit"),
+    ]
+
     def __init__(self):
-        self.event_status = defaultdict(dict)  # event_id -> {area_number: (status, timestamp)}
+        super().__init__()
+        self._event_status = defaultdict(dict)  # event_id -> {area_number: (status, timestamp)}
         self._lock = asyncio.Lock()
         self._running = True
-        self.console = Console()
+        self._tab_panes = {}
 
     async def update_status(self, event_id, area_number, status):
         async with self._lock:
-            self.event_status[event_id][area_number] = (
-                status, datetime.now()
-            )
+            self._event_status[event_id][area_number] = (status, datetime.now())
 
     async def stop(self):
         self._running = False
+        self.exit()
 
-    def _build_table(self):
-        table = Table(title="📊 Event Scraping Status", expand=True)
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Container():
+            self._tabs = TabbedContent()
+            yield self._tabs
+        yield Footer()
 
-        table.add_column("Event ID", style="bold white")
-        table.add_column("Area", justify="right", style="cyan", no_wrap=True)
-        table.add_column("Status", style="magenta")
-        table.add_column("Last Updated", style="green")
+    async def on_mount(self):
+        self.set_interval(0.5, self.refresh_tabs)
 
-        now = datetime.now()
-        for event_id in sorted(self.event_status.keys()):
-            for area, (status, timestamp) in sorted(self.event_status[event_id].items()):
-                seconds_ago = int((now - timestamp).total_seconds())
-                time_display = f"{seconds_ago}s ago"
-                table.add_row(str(event_id)[10:], str(area), status, time_display)
+    async def refresh_tabs(self):
+        async with self._lock:
+            snapshot = dict(self._event_status)
 
-        return table
+        for event_id, areas in snapshot.items():
+            if event_id not in self._tab_panes:
+                tab = EventTab(event_id)
+                self._tab_panes[event_id] = tab
+                self._tabs.add_pane(tab)
 
-    async def run(self):
-        with Live(self._build_table(), console=self.console, refresh_per_second=4) as live:
-            while self._running:
-                await asyncio.sleep(0.5)
-                async with self._lock:
-                    live.update(self._build_table())
+            self._tab_panes[event_id].update_table(areas)
+
+        current_ids = set(snapshot.keys())
+        for stale_id in list(self._tab_panes.keys()):
+            if stale_id not in current_ids:
+                self._tabs.remove_pane(self._tab_panes[stale_id])
+                del self._tab_panes[stale_id]
 

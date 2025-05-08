@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime
 import re
 from os import getenv
+import random
 
 from area_seating_scraper import AreaSeatingScraper
 from debug_ui import DebugUI
@@ -77,15 +78,16 @@ class EventManager:
 
     async def run_main_monitor(self):
         try:
-            await self.page.wait_for_selector('ul[id="ticket-type"]')
-            if not await self.check_manifest_image(self.page):
-                self.logger.info("Manifest image not found. Checking for seating canvas...")
-                if await self.page.locator('div#seatingMap canvas').count() > 0:
-                    self.logger.info("Seating canvas found")
+            async with self.network_sem: 
+                await self.page.wait_for_selector('ul[id="ticket-type"]')
+                if not await self.check_manifest_image(self.page):
+                    self.logger.info("Manifest image not found. Checking for seating canvas...")
+                    if await self.page.locator('div#seatingMap canvas').count() > 0:
+                        self.logger.info("Seating canvas found")
 
-                else:
-                    self.logger.info("seating canvas not found.. Exiting")
-                    return
+                    else:
+                        self.logger.info("seating canvas not found.. Exiting")
+                        return
 
 
             self.logger.info("Manifest image found. Starting main refresh loop...")
@@ -97,6 +99,8 @@ class EventManager:
             await seating_scraper.run()
         except Exception as e:
             self.logger.error(f"Something went wrong with event {self.base_url}: {e}")
+            await self.page.screenshot(path=f"./.fails/{random.randint(1,1000)}.jpg", full_page=True, timeout=0)
+            # need to pass timeout 0. Otherwise, another timeout error
 
 
     async def post_to_fastapi(self, data: dict):

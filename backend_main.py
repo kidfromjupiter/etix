@@ -178,7 +178,7 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
     else: 
         message = (
             f"**Event:** {event.url}\n"
-            f"**Time:** {alert.get('eventTime')}\n"
+            f"**Time:** {event.time}\n"
             f"Found {len(new_alerts)} seats in section {payload.section}"
             )
         asyncio.create_task(send_to_discord(message))

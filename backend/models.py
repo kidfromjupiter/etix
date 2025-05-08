@@ -10,6 +10,7 @@ class Event(Base):
     __tablename__ = "events"
     id = Column(String, primary_key=True)
     url = Column(String, nullable=False)
+    time = Column(String, nullable=True)
 
 class Seat(Base):
     __tablename__ = "seats"

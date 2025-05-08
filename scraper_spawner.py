@@ -29,8 +29,9 @@ async def main():
     browser = await playwright.chromium.launch(headless=HEADLESS_MODE)
     lg.info("Browser launched")
 
-    network_sem = asyncio.Semaphore(8) # network semaphore. Should control concurrency according to network 
+    network_sem = asyncio.Semaphore(12) # network semaphore. Should control concurrency according to network 
     # Sempaphore(1) allows only 1 section to load
+    # Also applies for CPU bottlenecked systems since loading the webpage is the most CPU intensive
 
     tasks = []
     with open("proxy_list") as proxy_list:
@@ -54,7 +55,7 @@ async def main():
                 event_url, proxy_manager, debug_ui, network_sem
             ))
 
-    tasks.append(debug_ui.run())
+    tasks.append(debug_ui.run_async())
 
     await asyncio.gather(*tasks)
 
