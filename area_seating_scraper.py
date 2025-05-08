@@ -28,6 +28,13 @@ async def scrape_section_data(tab: Page, section: str):
 
     return seat_data
 
+async def wait_for_function(page: Page, function_name, timeout=5000):
+    """Waits until a function is defined in the page context."""
+    await page.wait_for_function(
+        f"typeof {function_name} === 'function'",
+        timeout=timeout
+    )
+
 
 class AreaSeatingScraper:
     def __init__(self, page: Page, data_callback, proxy_manager: ProxyManager, base_url, debug_ui, network_sem):
@@ -58,12 +65,16 @@ class AreaSeatingScraper:
 
         async with self.network_sem:
             await new_tab.goto(self.base_url) 
+            await new_tab.wait_for_load_state("domcontentloaded")
             # url changes to a common URL when seating chart isn't displayed on first load. So 
             # cant use self.page.url
             await self.debug_ui.update_status(self.base_url,area_number,f"Waiting till initial loading complete..." )
             try:
-                await new_tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]') 
+                await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: checking for map" )
+                await new_tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
             except TimeoutError:
+                #await new_tab.screenshot(path=f"./no_map/{random.randint(0,1000)}.jpg", full_page=True)
+                await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: no map, checking for ticket type header" )
                 await new_tab.wait_for_selector('ul[id="ticket-type"]')
 
 
@@ -197,8 +208,8 @@ class AreaSeatingScraper:
                             if a:
                                 async with self.network_sem:
                                     await a.click()
-                                    await tab.wait_for_load_state('networkidle')
                                     await tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
+                                    #await tab.wait_for_load_state('networkidle')
                                 break
                     break
 
@@ -214,6 +225,7 @@ class AreaSeatingScraper:
                 try:
                     async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000, wait_until='networkidle') as _:
 
+                        await wait_for_function(tab, 'chooseSection')
                         await tab.evaluate(f"chooseSection('{area_number}')")
 
                         await self.debug_ui.update_status(self.base_url,area_number,f"Chosen section" )

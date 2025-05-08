@@ -33,6 +33,7 @@ class EventManager:
         self.timed_out = False
         self.event_id: int = 0
         self.proxy_manager: ProxyManager = proxy_manager
+        self.retries_remaining = 3
 
     async def init_browser(self):
         self.page = await self.proxy_manager.create_tab()
@@ -77,29 +78,31 @@ class EventManager:
             return None
 
     async def run_main_monitor(self):
-        try:
-            async with self.network_sem: 
-                if not await self.check_manifest_image(self.page):
-                    self.logger.info("Manifest image not found. Checking for seating canvas...")
-                    if await self.page.locator('div#seatingMap canvas').count() > 0:
-                        self.logger.info("Seating canvas found")
+        while self.retries_remaining > 0:
+            try:
+                async with self.network_sem: 
+                    if not await self.check_manifest_image(self.page):
+                        self.logger.info("Manifest image not found. Checking for seating canvas...")
+                        if await self.page.locator('div#seatingMap canvas').count() > 0:
+                            self.logger.info("Seating canvas found")
 
-                    else:
-                        self.logger.info("seating canvas not found.. Exiting")
-                        return
+                        else:
+                            self.logger.info("seating canvas not found.. Exiting")
+                            return
 
 
-            self.logger.info("Manifest image found. Starting main refresh loop...")
+                self.logger.info("Manifest image found. Starting main refresh loop...")
 
-            time_str = await self.get_event_time(self.page)
+                time_str = await self.get_event_time(self.page)
 
-            await self.create_event(time_str)
-            seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager, self.base_url, self.debug_ui, self.network_sem)
-            await seating_scraper.run()
-        except Exception as e:
-            self.logger.error(f"Something went wrong with event {self.base_url}: {e}")
-            await self.page.screenshot(path=f"./.fails/{random.randint(1,1000)}.jpg", full_page=True, timeout=0)
-            # need to pass timeout 0. Otherwise, another timeout error
+                await self.create_event(time_str)
+                seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager, self.base_url, self.debug_ui, self.network_sem)
+                await seating_scraper.run()
+            except Exception as e:
+                self.retries_remaining -= 1
+                self.logger.error(f"Something went wrong with event {self.base_url}: {e}.\nRetries remaining: {self.retries_remaining}")
+                await self.page.screenshot(path=f"./.fails/{random.randint(1,1000)}.jpg", full_page=True, timeout=0)
+                # need to pass timeout 0. Otherwise, another timeout error
 
 
     async def post_to_fastapi(self, data: dict):
