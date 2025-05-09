@@ -73,10 +73,17 @@ class AreaSeatingScraper:
                 await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: checking for map " )
                 await new_tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
             except TimeoutError:
-                #await new_tab.screenshot(path=f"./no_map/{random.randint(0,1000)}.jpg", full_page=True)
-                await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: no map, checking for ticket type " )
-                await new_tab.wait_for_selector('ul[id="ticket-type"]')
-
+                try:
+                    #await new_tab.screenshot(path=f"./no_map/{random.randint(0,1000)}.jpg", full_page=True)
+                    await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: no map, checking for ticket type " )
+                    await new_tab.wait_for_selector('ul[id="ticket-type"]')
+                except TimeoutError as e:
+                    self.logger.error(f"Error in spawn_tab for area {area_number}: {e}")
+                    await self.debug_ui.update_status(self.base_url,area_number,f"Error in monitor_tab for area {str(e)[:50]}..." )
+                    await self.proxy_manager.close_tab(new_tab)
+                    if new_tab in self.tabs.values():
+                        self.tabs.pop(area_number)
+                    return
 
         self.tabs[area_number] = new_tab
         await self.navigate_to_seating_manifest(new_tab, area_number)

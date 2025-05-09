@@ -3,8 +3,6 @@ import logging
 from typing import Dict, List, Optional, Set, Tuple
 import httpx
 from playwright.async_api import Browser, BrowserContext, Page, Response
-import time
-from base64 import b64encode
 
 import logger
 
@@ -49,6 +47,7 @@ class ProxyManager:
         # Preventing race conditions between other tasks requesting proxies that are already being assigned
         self.proxy_assignment_lock = asyncio.Lock()
         self.proxies_being_assigned: Set[tuple] = set()
+        self.context_management_lock = asyncio.Lock()
 
 
         self.logger.info("Starting up...")
@@ -124,8 +123,9 @@ class ProxyManager:
             for proxy in available_proxies:
                 proxy_key = self._proxy_to_key(proxy)
 
+
                 async with self.proxy_assignment_lock:
-                    if proxy_key in self.proxies_being_assigned:
+                    if proxy_key in self.proxies_being_assigned: # prevent race conditions when checking proxies
                         continue
                     self.proxies_being_assigned.add(proxy_key)
                 if await self.check_proxy(proxy):
@@ -140,6 +140,12 @@ class ProxyManager:
             self.logger.warning("No more proxies available!")
 
         # All proxies have contexts - use least loaded one
+        while True:
+            async with self.proxy_assignment_lock:
+                if not self.proxies_being_assigned:
+                    break
+            await asyncio.sleep(0.1)  # small backoff
+
         return self._get_least_loaded_context()
 
     async def create_tab(self, proxy: Optional[Dict[str, str]] = None, url: Optional[str] = None) -> Page:
@@ -149,15 +155,16 @@ class ProxyManager:
         2. If context is at max capacity, create new context (for same proxy if specified)
         3. Create new tab in selected context
         """
-        context = await self.get_or_create_context(proxy)
 
         # If context is at max capacity, create new one
-        if len(self.context_to_tabs[context]) >= self.max_tabs_per_context:
-            proxy_for_new = proxy if proxy else self.context_to_proxy[context]
-            context = await self._create_context_with_proxy(proxy_for_new)
+        async with self.context_management_lock:
+            context = await self.get_or_create_context(proxy)
+            if len(self.context_to_tabs[context]) >= self.max_tabs_per_context:
+                proxy_for_new = proxy if proxy else self.context_to_proxy[context]
+                context = await self._create_context_with_proxy(proxy_for_new)
 
-        page = await context.new_page()
-        self.context_to_tabs[context].append(page)
+            page = await context.new_page()
+            self.context_to_tabs[context].append(page)
 
         if url:
             await page.goto(url)
@@ -167,23 +174,25 @@ class ProxyManager:
     async def close_tab(self, page: Page) -> None:
         """Close a specific tab and clean up if its context becomes empty."""
         context = None
-        for ctx, tabs in self.context_to_tabs.items():
-            if page in tabs:
-                context = ctx
-                break
+        async with self.context_management_lock:
+            for ctx, tabs in self.context_to_tabs.items():
+                if page in tabs:
+                    context = ctx
+                    break
 
         if not context:
             self.logger.error("Page not found in any managed context. Probably already closed")
             return
 
-        self.context_to_tabs[context].remove(page)
-        await page.close()
+        async with self.context_management_lock:
+            self.context_to_tabs[context].remove(page)
+            await page.close()
 
-        # If context is now empty and we have more contexts for this proxy than needed, close it
-        proxy_key = self._proxy_to_key(self.context_to_proxy[context])
-        if (not self.context_to_tabs[context] and
-                len(self.proxy_to_contexts[proxy_key]) > 1):
-            await self.close_context(context)
+            # If context is now empty and we have more contexts for this proxy than needed, close it
+            proxy_key = self._proxy_to_key(self.context_to_proxy[context])
+            if (not self.context_to_tabs[context] and
+                    len(self.proxy_to_contexts[proxy_key]) > 1):
+                await self.close_context(context)
 
     async def close_context(self, context: BrowserContext) -> None:
         """Close a browser context and clean up tracking."""
@@ -191,16 +200,17 @@ class ProxyManager:
             self.logger.error("Context not managed by this ProxyManager. Probably already closed")
             return
 
-        # Close all tabs in this context first
-        for page in self.context_to_tabs[context][:]:
-            await page.close()
+        async with self.context_management_lock:
+            # Close all tabs in this context first
+            for page in self.context_to_tabs[context][:]:
+                await page.close()
 
-        # Clean up tracking
-        proxy = self.context_to_proxy[context]
-        proxy_key = self._proxy_to_key(proxy)
-        self.proxy_to_contexts[proxy_key].remove(context)
-        del self.context_to_proxy[context]
-        del self.context_to_tabs[context]
+            # Clean up tracking
+            proxy = self.context_to_proxy[context]
+            proxy_key = self._proxy_to_key(proxy)
+            self.proxy_to_contexts[proxy_key].remove(context)
+            del self.context_to_proxy[context]
+            del self.context_to_tabs[context]
 
         await context.close()
 
@@ -209,6 +219,8 @@ class ProxyManager:
             proxy_url = f"http://{proxy['username']}:{proxy['password']}@{proxy['server'][7:]}"
             async with httpx.AsyncClient(proxy=proxy_url, timeout=5) as client:
                 response = await client.get("https://api.ipify.org/?format=json")
+                async with self.proxy_assignment_lock:
+                    self.proxies_being_assigned.discard(self._proxy_to_key(proxy))
                 if response.status_code == 200:
                     self.logger.info(f"Proxy {proxy['server']} is working. IP: {response.json().get('ip')}")
                     return True
@@ -216,5 +228,7 @@ class ProxyManager:
                     return False
             return True
         except Exception as e:
+            async with self.proxy_assignment_lock:
+                self.proxies_being_assigned.discard(self._proxy_to_key(proxy))
             self.logger.warning(f"Proxy check failed for {proxy['server']}: {e}")
             return False
