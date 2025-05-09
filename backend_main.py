@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import asynccontextmanager
 import time
 import uuid
 import re
@@ -18,9 +19,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-app = FastAPI()
-init_db()
-
 def get_db():
     db = SessionLocal()
     try:
@@ -31,13 +29,36 @@ def get_db():
 
 DISCORD_WEBHOOK_URL = getenv("DISCORD_WEBHOOK_URL")
 DEBUG = True
+BUFFER_INTERVAL = 5 # in seconds
 events_db = {}
 seats_db = {}
 
 
 last_reset_time = 0
-remaining_requests = 5  # default
+buffer = []
+buffer_lock = asyncio.Lock()
+last_reset_time = 0
+remaining_requests = 5
 lock = asyncio.Lock()
+
+
+
+async def flush_buffer():
+    global buffer
+    while True:
+        await asyncio.sleep(BUFFER_INTERVAL)
+        async with buffer_lock:
+            if buffer:
+                combined_message = "\n\n".join(buffer)
+                buffer = []
+                if not DEBUG:
+                    await send_to_discord(combined_message)
+                else:
+                    print("Buffered Message:\n", combined_message)
+
+async def add_to_msg_buffer(message):
+    async with buffer_lock:
+        buffer.append(message)
 
 
 async def send_to_discord( message):
@@ -80,6 +101,22 @@ async def send_to_discord( message):
         print(f"Got an error in send_to_discord: {e[:60]}...")
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    flush_task = asyncio.create_task(flush_buffer())
+
+    yield  # Let the app run
+
+    # Shutdown
+    flush_task.cancel()
+    try:
+        await flush_task
+    except asyncio.CancelledError:
+        pass
+
+app = FastAPI(lifespan=lifespan)
+init_db()
 
 @app.post("/create-event", response_model=EventResponse)
 def create_event(data: EventCreateRequest, db: Session = Depends(get_db)):
@@ -179,16 +216,14 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
                 f"**Seat:** {alert.get('seat')}\n"
                 f"**Price:** ${alert.get('price')}"
             )
-            print(message)
-            if not DEBUG: asyncio.create_task(send_to_discord(message))
+            await add_to_msg_buffer(message)
     else: 
         message = (
             f"**Event:** {event.url}\n"
             f"**Time:** {event.time}\n"
             f"Found {len(new_alerts)} seats in section {payload.section}"
             )
-        print(message)
-        if not DEBUG: asyncio.create_task(send_to_discord(message))
+        await add_to_msg_buffer(message)
 
     return {"message": f"{len(new_alerts)} new available seats ingested"}
 
