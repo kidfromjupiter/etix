@@ -146,7 +146,11 @@ class AreaSeatingScraper:
                 await asyncio.sleep(1)
                 continue
 
-            tab = self.tabs[area_number]
+            try:
+                tab = self.tabs[area_number]
+            except KeyError:
+                # This tab was closed somewhere else. Just return the function. It will be spawned back
+                return
 
             self.logger.info(f"Reloading area {area_number} for updates..")
             await self.debug_ui.update_status(self.base_url,area_number,"Reloading area for updates.." )
@@ -229,28 +233,28 @@ class AreaSeatingScraper:
 
 
             async with self.network_sem:
-                    await wait_for_function(tab, "isGASection")
-                    if await tab.evaluate(f"isGASection('{area_number}')"):
-                        #this is a general admission section
-                        self.logger.info("This is a ga section. Adding to section blacklist...")
-                        await self.debug_ui.update_status(self.base_url,area_number,f"GA section. Adding to section blacklist" )
-                        self.section_blacklist.append(area_number)
-                        await self.proxy_manager.close_tab(tab)
-                        if tab in self.tabs.values():
-                            self.tabs.pop(area_number)
-                        return
-                    async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000) as _:
-                        await wait_for_function(tab, 'chooseSection')
+                await wait_for_function(tab, "isGASection")
+                if await tab.evaluate(f"isGASection('{area_number}')"):
+                    #this is a general admission section
+                    self.logger.info("This is a ga section. Adding to section blacklist...")
+                    await self.debug_ui.update_status(self.base_url,area_number,f"GA section. Adding to section blacklist" )
+                    self.section_blacklist.append(area_number)
+                    await self.proxy_manager.close_tab(tab)
+                    if tab in self.tabs.values():
+                        self.tabs.pop(area_number)
+                    return
+                async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000) as _:
+                    await wait_for_function(tab, 'chooseSection')
 
 
-                        await tab.evaluate(f"chooseSection('{area_number}')")
+                    await tab.evaluate(f"chooseSection('{area_number}')")
 
-                        await self.debug_ui.update_status(self.base_url,area_number,f"Chosen section" )
-                        self.logger.info(f"Chosen section {area_number}")
+                    await self.debug_ui.update_status(self.base_url,area_number,f"Chosen section" )
+                    self.logger.info(f"Chosen section {area_number}")
 
-                        # Check for CAPTCHA after selection
-                        if await self.check_for_captcha(tab, area_number):
-                            await self.handle_captcha(tab, area_number)
+                    # Check for CAPTCHA after selection
+                    if await self.check_for_captcha(tab, area_number):
+                        await self.handle_captcha(tab, area_number)
 
             self.logger.info(f"Selected section {area_number}")
 
@@ -288,22 +292,37 @@ class AreaSeatingScraper:
                 async with Capsolver(getenv("CAPSOLVER_API_KEY")) as capsolver:
                     self.logger.info("Trying to solve captcha..")
                     await self.debug_ui.update_status(self.base_url,area_number,f"Trying to solve captcha.." )
-                    solution = await capsolver.solve_recaptcha_v2_invisible(
-                        website_url="https://www.etix.com",
-                        website_key="6LedR4IUAAAAAN1WFw_JWomeQEZbfo75LAPLvMQG"
-                    )
-                    if solution:
-                        # automatically finding the recaptcha callback and calling it
-                        with open("scripts/getRecaptchaCallback.js") as callback_finder:
-                            results = await tab.evaluate(callback_finder.read())
-                            await tab.evaluate(
-                                f"solution => {results[0]['callback']}(solution)", solution)
+                    try:
+                        # need to solve captcha within 2 minutes. Otherwise it is an illegal solve
+                        solution = await asyncio.wait_for(
+                                capsolver.solve_recaptcha_v2_invisible(
+                                website_url="https://www.etix.com",
+                                website_key="6LedR4IUAAAAAN1WFw_JWomeQEZbfo75LAPLvMQG"
+                            ),
+                            timeout=120
+                        )
+                        if solution:
+                            # automatically finding the recaptcha callback and calling it
+                            with open("scripts/getRecaptchaCallback.js") as callback_finder:
+                                results = await tab.evaluate(callback_finder.read())
+                                await tab.evaluate(
+                                    f"solution => {results[0]['callback']}(solution)", solution)
 
-                        self.logger.info(f"Solved captcha!")
-                        await self.debug_ui.update_status(self.base_url,area_number,f"Solved captcha!" )
-                    else:
-                        self.logger.info("Failed to solve captcha")
-                        await self.debug_ui.update_status(self.base_url,area_number,f"Failed to solve captcha" )
+                            self.logger.info(f"Solved captcha!")
+                            await self.debug_ui.update_status(self.base_url,area_number,f"Solved captcha!" )
+                        else:
+                            self.logger.info("Failed to solve captcha")
+                            await self.debug_ui.update_status(self.base_url,area_number,f"Failed to solve captcha" )
+                    
+                    except asyncio.TimeoutError:
+                        self.debug_ui.update_status(self.base_url, area_number, f"Failed to solve captcha within 2 minutes.."
+                                                    f" Closing tab and respawning.")
+                        self.logger.info(f"Failed to solve captcha within 2 minutes.."
+                                                    f" Closing tab and respawning. area: {area_number}")
+
+                        await self.proxy_manager.close_tab(tab)
+                        if tab in self.tabs:
+                            self.tabs.pop(area_number)
 
                 
                 # waiting for seating chart to appear

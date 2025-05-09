@@ -30,6 +30,7 @@ def get_db():
 
 
 DISCORD_WEBHOOK_URL = getenv("DISCORD_WEBHOOK_URL")
+DEBUG = True
 events_db = {}
 seats_db = {}
 
@@ -42,37 +43,41 @@ lock = asyncio.Lock()
 async def send_to_discord( message):
     global last_reset_time, remaining_requests
 
+    try:
+        async with lock:
+            now = time.time()
+            if remaining_requests == 0 and now < last_reset_time:
+                sleep_for = last_reset_time - now
+                await asyncio.sleep(sleep_for)
 
-    async with lock:
-        now = time.time()
-        if remaining_requests == 0 and now < last_reset_time:
-            sleep_for = last_reset_time - now
-            await asyncio.sleep(sleep_for)
+            async with httpx.AsyncClient() as client:
+                response = await client.post(DISCORD_WEBHOOK_URL, json={"content": message})
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(DISCORD_WEBHOOK_URL, json={"content": message})
+                # Parse rate limit headers
+                remaining = response.headers.get("X-RateLimit-Remaining")
+                reset = response.headers.get("X-RateLimit-Reset")
+                retry_after = response.headers.get("Retry-After")
 
-            # Parse rate limit headers
-            remaining = response.headers.get("X-RateLimit-Remaining")
-            reset = response.headers.get("X-RateLimit-Reset")
-            retry_after = response.headers.get("Retry-After")
 
-            if remaining is not None:
-                remaining_requests = int(remaining)
+                if remaining is not None:
+                    remaining_requests = int(remaining)
 
-            if reset is not None:
-                last_reset_time = float(reset)
+                if reset is not None:
+                    last_reset_time = float(reset)
 
-            if response.status_code == 429 and retry_after:
-                await asyncio.sleep(float(retry_after))
+                if response.status_code == 429 and retry_after:
+                    print(f"Rate limited for {retry_after}")
+                    await asyncio.sleep(float(retry_after))
 
-            if response.status_code >= 400:
-                print("Failed to send message:", response.text)
-            
-            if response.status_code == 200:
-                print("Sent message to discord")
-            else:
-                print(response.text)
+                if response.status_code >= 400:
+                    print("Failed to send message:", response.text)
+
+                if response.status_code == 200:
+                    print("Sent message to discord")
+                else:
+                    print(response.text)
+    except Exception as e:
+        print(f"Got an error in send_to_discord: {e[:60]}...")
 
 
 
@@ -174,14 +179,16 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
                 f"**Seat:** {alert.get('seat')}\n"
                 f"**Price:** ${alert.get('price')}"
             )
-            asyncio.create_task(send_to_discord(message))
+            print(message)
+            if not DEBUG: asyncio.create_task(send_to_discord(message))
     else: 
         message = (
             f"**Event:** {event.url}\n"
             f"**Time:** {event.time}\n"
             f"Found {len(new_alerts)} seats in section {payload.section}"
             )
-        asyncio.create_task(send_to_discord(message))
+        print(message)
+        if not DEBUG: asyncio.create_task(send_to_discord(message))
 
     return {"message": f"{len(new_alerts)} new available seats ingested"}
 
