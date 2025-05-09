@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from priority_semaphore import PrioritySemaphore
 from proxy_manager import ProxyManager
 
 EVENT_URL = "https://www.etix.com/ticket/p/61485410/ludacris-with-special-guestsbow-wow-bone-thugsnharmony-albuquerque-sandia-casino-amphitheater"
@@ -23,7 +24,7 @@ class EventManager:
     def __init__(self, base_url,  proxy_manager, debug_ui, network_sem):
         self.playwright = None
         self.base_url = base_url
-        self.network_sem = network_sem
+        self.network_sem: PrioritySemaphore = network_sem
         self.context = None
         self.page = None
         self.debug_ui = debug_ui
@@ -79,7 +80,7 @@ class EventManager:
     async def run_main_monitor(self):
         while self.retries_remaining > 0:
             try:
-                async with self.network_sem: 
+                async with self.network_sem.priority(8): 
                     if not await self.check_manifest_image(self.page):
                         self.logger.info("Manifest image not found. Checking for seating canvas...")
                         if await self.page.locator('div#seatingMap canvas').count() > 0:

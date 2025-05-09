@@ -4,6 +4,7 @@ from os import getenv
 from dotenv import load_dotenv
 
 from debug_ui import DebugUI
+from priority_semaphore import PrioritySemaphore
 from proxy_manager import ProxyManager
 
 load_dotenv()
@@ -16,6 +17,11 @@ from logger import setup_logger
 DEBUG=True if getenv("DEBUG") == "True" else False
 
 ERROR_URL = "https://etix.com/ticket/online2z/flowError.jsp"
+
+
+INITIAL_LOADING_PRIORITY = 9
+TAB_RELOAD_PRIORITY = 11
+MAIN_RELOAD_PRIORITY = 10
 
 async def get_available_area_numbers(page):
     area_elements = await page.query_selector_all('map[name="EtixOnlineManifestMap"] > area[status="Available"]')
@@ -41,7 +47,7 @@ class AreaSeatingScraper:
         self.last_rate_limit_time = None
         self.page = page
         self.base_url = base_url
-        self.network_sem: asyncio.Semaphore = network_sem
+        self.network_sem: PrioritySemaphore = network_sem
         self.tabs: dict[str, Page] = {}
         self.timed_out = False
         self.logger = setup_logger("AreaSeatingScraper")
@@ -63,7 +69,7 @@ class AreaSeatingScraper:
 
         new_tab: Page = await self.proxy_manager.create_tab()
 
-        async with self.network_sem:
+        async with self.network_sem.priority(INITIAL_LOADING_PRIORITY):
             await new_tab.goto(self.base_url) 
             await new_tab.wait_for_load_state("domcontentloaded")
             # url changes to a common URL when seating chart isn't displayed on first load. So 
@@ -134,7 +140,7 @@ class AreaSeatingScraper:
             await self.debug_ui.update_status(self.base_url,"main", f"Sleeping for {str(sleep_time)[:5]}s...")
             await asyncio.sleep(sleep_time)
 
-            async with self.network_sem:
+            async with self.network_sem.priority(MAIN_RELOAD_PRIORITY):
                 await self.page.reload()
                 await self.debug_ui.update_status(self.base_url,"main", "Waiting till reloading finish..")
                 await self.page.wait_for_load_state("networkidle")
@@ -155,7 +161,7 @@ class AreaSeatingScraper:
             self.logger.info(f"Reloading area {area_number} for updates..")
             await self.debug_ui.update_status(self.base_url,area_number,"Reloading area for updates.." )
 
-            async with self.network_sem:
+            async with self.network_sem.priority(TAB_RELOAD_PRIORITY):
                 try:
                     await tab.reload()
                 except TimeoutError:
@@ -217,7 +223,7 @@ class AreaSeatingScraper:
                         for other_li in lis:
                             a = await other_li.query_selector("a:has-text('Seating Chart')")
                             if a:
-                                async with self.network_sem:
+                                async with self.network_sem.priority(INITIAL_LOADING_PRIORITY):
                                     await a.click()
                                     await tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
                                     #await tab.wait_for_load_state('networkidle')
@@ -232,7 +238,7 @@ class AreaSeatingScraper:
             await self.seating_chart_selected(tab)
 
 
-            async with self.network_sem:
+            async with self.network_sem.priority(INITIAL_LOADING_PRIORITY):
                 await wait_for_function(tab, "isGASection")
                 if await tab.evaluate(f"isGASection('{area_number}')"):
                     #this is a general admission section
@@ -333,6 +339,8 @@ class AreaSeatingScraper:
             except Exception as e:
                 self.logger.error(f"Error waiting for CAPTCHA resolution: {e}. \n Clearing tab {area_number}..")
                 await self.debug_ui.update_status(self.base_url,area_number,f"Error waiting for CAPTCHA resolution: {e}. \n Clearing tab.." )
+                if ERROR_URL in tab.url:
+                    self.logger.error(f"URL: {tab.url}")
                 await self.proxy_manager.close_tab(tab)
                 if tab in self.tabs:
                     self.tabs.pop(area_number)
