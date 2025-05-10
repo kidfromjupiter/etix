@@ -10,6 +10,7 @@ from proxy_manager import ProxyManager
 load_dotenv()
 
 from playwright.async_api import Page, TimeoutError
+from playwright._impl._errors import TargetClosedError
 
 from capsolver import Capsolver
 from logger import setup_logger
@@ -62,6 +63,7 @@ class AreaSeatingScraper:
         self.ready_areas = []
         self.initial_spawning_complete = False
         self.section_blacklist = [] # sections that should not be respawned
+        self.spawn_target_closed_errors: dict[str, int] ={}
 
     async def spawn_tab(self, area_number):
         # waiting till captcha is solved ( if there is )
@@ -70,7 +72,11 @@ class AreaSeatingScraper:
         new_tab: Page = await self.proxy_manager.create_tab()
 
         async with self.network_sem.priority(INITIAL_LOADING_PRIORITY):
-            await new_tab.goto(self.base_url) 
+            try:
+                await new_tab.goto(self.base_url) 
+            except TargetClosedError:
+                await self.debug_ui.update_status(self.base_url,area_number,f"Initial load fail. Target or context crashed. Will respawn" )
+                return
             await new_tab.wait_for_load_state("domcontentloaded")
             # url changes to a common URL when seating chart isn't displayed on first load. So 
             # cant use self.page.url
@@ -157,6 +163,7 @@ class AreaSeatingScraper:
             except KeyError:
                 # This tab was closed somewhere else. Just return the function. It will be spawned back
                 return
+            
 
             self.logger.info(f"Reloading area {area_number} for updates..")
             await self.debug_ui.update_status(self.base_url,area_number,"Reloading area for updates.." )
@@ -167,9 +174,15 @@ class AreaSeatingScraper:
                 except TimeoutError:
                     self.logger.error(f"Got timeout error in reload. Try reducing the concurrency semaphore.\n"
                                       f"Section: {area_number}, event: {self.base_url}.")
-                    self.debug_ui.update_status(self.base_url, area_number, f"Got timeout error in reload."
+                    await self.debug_ui.update_status(self.base_url, area_number, f"Got timeout error in reload."
                                                 f"Try reducing the concurrency semaphore.")
                     continue # try going for another round
+                except TargetClosedError:
+                    self.logger.warning(f"Context or page apparently closed. Setting to respawn...")
+                    await self.debug_ui.update_status(self.base_url,area_number,f"Context or page apparently closed. Setting to respawn..." )
+                    await self.proxy_manager.close_tab(tab)
+                    if area_number in self.tabs: self.tabs.pop(area_number)
+                    return
 
 
             # Check for CAPTCHA on reload
@@ -177,10 +190,6 @@ class AreaSeatingScraper:
                 await self.handle_captcha(tab,area_number)
 
             await self.captcha_solved_event.wait()
-
-            current_url = tab.url
-            if current_url == ERROR_URL:
-                self.timed_out = True
 
             await asyncio.sleep(0)
             try:
@@ -192,11 +201,13 @@ class AreaSeatingScraper:
                     await self.data_callback({"rows":seats['adjacentSeats'], 'section': area_number})
                     self.logger.info(f"Sent data to backend")
                     await self.debug_ui.update_status(self.base_url,area_number,"Sent data to backend" )
+                else: self.logger.info("Didn't find anything")
             except Exception as e:
                 self.logger.error(f"Error in tab {area_number}: {e}")
                 await self.debug_ui.update_status(self.base_url,area_number,f"Error in tab {str(e)[:50]}..." )
                 await self.proxy_manager.close_tab(tab)
                 self.tabs.pop(area_number)
+                return
 
     async def seating_chart_selected(self, tab: Page):
 
@@ -271,6 +282,16 @@ class AreaSeatingScraper:
             await self.debug_ui.update_status(self.base_url,area_number,f"Manifest loaded" )
             self.logger.info("Selection complete")
             self.ready_areas.append(area_number)
+
+            # Block unnecessary resource types
+            async def route_intercept(route, request):
+                if request.resource_type in ['document']:
+                    await route.continue_()
+                else:
+                    await route.abort()
+
+            await tab.route("**/*", route_intercept)
+
             asyncio.create_task(self.reload_tab_and_monitor(area_number))
 
         except Exception as e:

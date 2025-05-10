@@ -8,7 +8,7 @@ from area_seating_scraper import AreaSeatingScraper
 from debug_ui import DebugUI
 from logger import setup_logger
 import httpx
-from playwright.async_api import async_playwright, Page
+from playwright.async_api import async_playwright, Page, Request
 import aiohttp
 from dotenv import load_dotenv
 
@@ -35,6 +35,7 @@ class EventManager:
         self.event_id: int = 0
         self.proxy_manager: ProxyManager = proxy_manager
         self.retries_remaining = 3
+        self.has_manifest_image_event = asyncio.Event()
 
     async def init_browser(self):
         self.page = await self.proxy_manager.create_tab()
@@ -46,7 +47,8 @@ class EventManager:
         async with page.expect_navigation() as _:
             await button.click()
             try:
-                await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000)
+                await asyncio.wait_for(self.has_manifest_image_event.wait(), timeout=5000)
+                #await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000)
                 return True
             except:
                 self.logger.info("Image with usemap not found. Looking for seating chart button")
@@ -55,7 +57,8 @@ class EventManager:
 
     async def check_manifest_image(self, page: Page):
         try:
-            await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]')
+            #await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]')
+            await asyncio.wait_for(self.has_manifest_image_event.wait(), timeout=5000)
             return True
         except:
             map_found = await self.look_for_map(page)
@@ -82,26 +85,21 @@ class EventManager:
             try:
                 async with self.network_sem.priority(8): 
                     if not await self.check_manifest_image(self.page):
-                        self.logger.info("Manifest image not found. Checking for seating canvas...")
-                        if await self.page.locator('div#seatingMap canvas').count() > 0:
-                            self.logger.info("Seating canvas found")
-
-                        else:
-                            self.logger.info("seating canvas not found.. Exiting")
-                            return
-
+                        # Current version can't handle seating canvas anyway.
+                        return
 
                 self.logger.info("Manifest image found. Starting main refresh loop...")
 
                 time_str = await self.get_event_time(self.page)
 
+                self.retries_remaining = 3 # resetting the retries
                 await self.create_event(time_str)
                 seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager, self.base_url, self.debug_ui, self.network_sem)
                 await seating_scraper.run()
             except Exception as e:
                 self.retries_remaining -= 1
                 self.logger.error(f"Something went wrong with event {self.base_url}: {e}.\nRetries remaining: {self.retries_remaining}")
-                await self.page.screenshot(path=f"./.fails/{random.randint(1,1000)}.jpg", full_page=True, timeout=0)
+                #await self.page.screenshot(path=f"./.fails/{random.randint(1,1000)}.jpg", full_page=True, timeout=0)
                 # need to pass timeout 0. Otherwise, another timeout error
 
 
@@ -123,9 +121,14 @@ class EventManager:
                     self.event_id = (await response.json())["event_id"]
                     self.logger.info(f"Successfully created event {self.base_url}")
 
+    async def _on_request(self, request: Request):
+        if request.url.startswith("https://cdn.etix.com/etix/viewable_chart/"):
+            self.has_manifest_image_event.set()
+            
     async def run(self):
         await self.init_browser()
         await self.page.goto(self.base_url)
+        self.page.on('request', lambda req: self._on_request(req))
         await self.run_main_monitor()
 
     async def close(self):
