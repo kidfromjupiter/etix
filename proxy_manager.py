@@ -69,6 +69,7 @@ class ProxyManager:
         """Create a new browser context with the given proxy."""
         pw_proxy = self._proxy_to_playwright_format(proxy)
         context = await self.browser.new_context(proxy=pw_proxy)
+        context.on("close",lambda ctx: self._context_closed_event(ctx) )
         self.context_to_proxy[context] = proxy
         self.proxy_to_contexts[self._proxy_to_key(proxy)].append(context)
         self.context_to_tabs[context] = []
@@ -164,12 +165,50 @@ class ProxyManager:
                 context = await self._create_context_with_proxy(proxy_for_new)
 
             page = await context.new_page()
+            page.on("crash", lambda page: self._page_crashed_event(page))
             self.context_to_tabs[context].append(page)
 
         if url:
             await page.goto(url)
 
         return page
+
+    async def _page_crashed_event(self, page: Page):
+        context = None
+        self.logger.error("Page Crashed!")
+        async with self.context_management_lock:
+            for ctx, tabs in self.context_to_tabs.items():
+                if page in tabs:
+                    context = ctx
+                    break
+
+        if not context:
+            self.logger.error("Page not found in any managed context. Probably already closed")
+            return
+
+        async with self.context_management_lock:
+            self.context_to_tabs[context].remove(page)
+
+            # If context is now empty and we have more contexts for this proxy than needed, close it
+            proxy_key = self._proxy_to_key(self.context_to_proxy[context])
+            if (not self.context_to_tabs[context] and
+                    len(self.proxy_to_contexts[proxy_key]) > 1):
+                self.logger.info("Context empty. Closing context...")
+                await self.close_context(context)
+
+    async def _context_closed_event(self, context: BrowserContext):
+        self.logger.warning("Closed context event received!")
+        async with self.context_management_lock:
+            # Close all tabs in this context first
+            for page in self.context_to_tabs[context][:]:
+                await page.close()
+
+            # Clean up tracking
+            proxy = self.context_to_proxy[context]
+            proxy_key = self._proxy_to_key(proxy)
+            self.proxy_to_contexts[proxy_key].remove(context)
+            del self.context_to_proxy[context]
+            del self.context_to_tabs[context]
 
     async def close_tab(self, page: Page) -> None:
         """Close a specific tab and clean up if its context becomes empty."""
@@ -192,6 +231,7 @@ class ProxyManager:
             proxy_key = self._proxy_to_key(self.context_to_proxy[context])
             if (not self.context_to_tabs[context] and
                     len(self.proxy_to_contexts[proxy_key]) > 1):
+                self.logger.info("Context empty. Closing context...")
                 await self.close_context(context)
 
     async def close_context(self, context: BrowserContext) -> None:
@@ -213,6 +253,7 @@ class ProxyManager:
             del self.context_to_tabs[context]
 
         await context.close()
+        self.logger.info("Context closed")
 
     async def check_proxy(self, proxy: Dict[str, str]) -> bool:
         try:
