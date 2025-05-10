@@ -42,6 +42,11 @@ async def wait_for_function(page: Page, function_name, timeout=5000):
         timeout=timeout
     )
 
+async def wait_for_window_property(page: Page, prop_name: str, timeout=5000):
+    await page.wait_for_function(
+        f"() => window.hasOwnProperty('{prop_name}')",
+        timeout=timeout
+    )
 
 class AreaSeatingScraper:
     def __init__(self, page: Page, data_callback, proxy_manager: ProxyManager, base_url, debug_ui, network_sem):
@@ -52,6 +57,8 @@ class AreaSeatingScraper:
         self.tabs: dict[str, Page] = {}
         self.timed_out = False
         self.logger = setup_logger("AreaSeatingScraper")
+        self.data_logger = setup_logger("Datalogger", logfile="datalogs.log")
+        self.data_logger.propagate = False
         self.debug_ui: DebugUI = debug_ui
         self.logger.propagate = False
         self.data_callback = data_callback
@@ -64,7 +71,7 @@ class AreaSeatingScraper:
         self.initial_spawning_complete = False
         self.section_blacklist = [] # sections that should not be respawned
         self.spawn_target_closed_errors: dict[str, int] ={}
-
+        
     async def spawn_tab(self, area_number):
         # waiting till captcha is solved ( if there is )
         await self.captcha_solved_event.wait()
@@ -193,6 +200,12 @@ class AreaSeatingScraper:
 
             await asyncio.sleep(0)
             try:
+                try:
+                    await tab.wait_for_load_state("networkidle")
+                    await wait_for_window_property(tab, 'rowSeatStatus', timeout=3000)
+                except TimeoutError:
+                    # Probably an error page
+                    continue
                 seats = await scrape_section_data(tab, area_number)
                 self.logger.info(f"Extracted data for section {area_number}")
                 await self.debug_ui.update_status(self.base_url,area_number,"Extracted data" )
