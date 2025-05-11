@@ -49,7 +49,8 @@ async def wait_for_window_property(page: Page, prop_name: str, timeout=5000):
     )
 
 class AreaSeatingScraper:
-    def __init__(self, page: Page, data_callback, proxy_manager: ProxyManager, base_url, debug_ui, network_sem):
+    def __init__(self, page: Page, data_callback, proxy_manager: ProxyManager, base_url, debug_ui, network_sem,
+                 initial_load_complete_callback):
         self.last_rate_limit_time = None
         self.page = page
         self.base_url = base_url
@@ -68,15 +69,26 @@ class AreaSeatingScraper:
         self.looking_for_captcha_event = asyncio.Event()
         self.captcha_solved_event.set()  # Initially set to True (no CAPTCHA)
         self.ready_areas = []
-        self.initial_spawning_complete = False
+        self.initial_loading_complete_dict: dict[str, bool] = {}
+        self.initial_loading_complete_callback = initial_load_complete_callback
+        self.initial_spawning_complete = False # spawning is just for spawning the tabs. initial loading is different
         self.section_blacklist = [] # sections that should not be respawned
         self.spawn_target_closed_errors: dict[str, int] ={}
         
+    async def _initial_load_complete_check(self):
+        while True:
+            if self.initial_loading_complete_dict and all(self.initial_loading_complete_dict.values()):
+                self.initial_loading_complete_callback()
+                return
+            else:
+                await asyncio.sleep(1)
+
     async def spawn_tab(self, area_number):
         # waiting till captcha is solved ( if there is )
         await self.captcha_solved_event.wait()
 
         new_tab: Page = await self.proxy_manager.create_tab()
+        self.initial_loading_complete_dict[area_number] = False
 
         async with self.network_sem.priority(INITIAL_LOADING_PRIORITY):
             try:
@@ -111,6 +123,7 @@ class AreaSeatingScraper:
 
         await self.debug_ui.update_status(self.base_url,"main", "Waiting till loading finish..")
         await self.page.wait_for_load_state("networkidle")
+        asyncio.create_task(self._initial_load_complete_check())
 
         while True:
             # Some pages don't load the manifest automatically. You need to navigate to it
@@ -305,6 +318,7 @@ class AreaSeatingScraper:
 
             await tab.route("**/*", route_intercept)
 
+            self.initial_loading_complete_dict[area_number] = True
             asyncio.create_task(self.reload_tab_and_monitor(area_number))
 
         except Exception as e:

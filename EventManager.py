@@ -21,7 +21,7 @@ EVENT_URL = "https://www.etix.com/ticket/p/61485410/ludacris-with-special-guests
 HEADLESS_MODE = True
 
 class EventManager:
-    def __init__(self, base_url,  proxy_manager, debug_ui, network_sem):
+    def __init__(self, base_url,  proxy_manager, debug_ui, network_sem, initial_load_complete_callback):
         self.playwright = None
         self.base_url = base_url
         self.network_sem: PrioritySemaphore = network_sem
@@ -36,6 +36,7 @@ class EventManager:
         self.proxy_manager: ProxyManager = proxy_manager
         self.retries_remaining = 3
         self.has_manifest_image_event = asyncio.Event()
+        self.initial_load_complete_callback = initial_load_complete_callback
 
     async def init_browser(self):
         self.page = await self.proxy_manager.create_tab()
@@ -94,7 +95,10 @@ class EventManager:
 
                 self.retries_remaining = 3 # resetting the retries
                 await self.create_event(time_str)
-                seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi, self.proxy_manager, self.base_url, self.debug_ui, self.network_sem)
+                seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi,
+                                                      self.proxy_manager, self.base_url, self.debug_ui,
+                                                      self.network_sem,
+                                                      self.initial_load_complete_callback)
                 await seating_scraper.run()
             except Exception as e:
                 self.retries_remaining -= 1
