@@ -19,6 +19,7 @@ class BrowserInstance:
     proxy_manager: ProxyManager
     tasks: List[asyncio.Task]
     event_urls: List[str]
+    proxies: List[str]
 
 class BrowserManager:
     def __init__(self, max_browsers: int = 3, events_per_browser: int = 5):
@@ -26,12 +27,12 @@ class BrowserManager:
         self.events_per_browser = events_per_browser
         self.active_browsers: List[BrowserInstance] = []
         self.all_event_urls: List[str] = []
+        self.all_proxies: List[str] = []
         self.logger = setup_logger("BrowserManager")
-        self.network_sem = PrioritySemaphore(12)
+        self.network_sem = PrioritySemaphore(8)
         self.debug_ui = DebugUI()
-        self.proxies: List[Dict] = []
         self.loading_lock = asyncio.Semaphore(1)
-        
+        self.num_browsers: int = 0 
     async def initialize(self):
         # Load proxies and event URLs
         await self._load_proxies()
@@ -43,6 +44,7 @@ class BrowserManager:
             self.max_browsers,
             len(self.all_event_urls) // (self.events_per_browser or 1) + 1
         )
+        self.num_browsers = num_browsers
         
         # Start all browsers and distribute events immediately
         for _ in range(num_browsers):
@@ -56,7 +58,7 @@ class BrowserManager:
             for proxy in proxies:
                 pattern = r"(\d.+):(\w+):(\w+)"
                 matches = re.search(pattern, proxy)
-                self.proxies.append({
+                self.all_proxies.append({
                     "server": f'http://{matches.group(1)}',
                     "username": matches.group(2),
                     "password": matches.group(3)
@@ -75,16 +77,16 @@ class BrowserManager:
         playwright = await async_playwright().start()
         browser = await playwright.chromium.launch(headless=HEADLESS_MODE)
         
-        # Setup proxy manager for this browser
-        proxy_manager = ProxyManager(browser, self.proxies)
-        
+        # proxy manager is setup later when dispatching events 
+
         # Create browser instance
         browser_instance = BrowserInstance(
             playwright_instance=playwright,
             browser=browser,
-            proxy_manager=proxy_manager,
+            proxy_manager=None,
             tasks=[],
-            event_urls=[]
+            event_urls=[],
+            proxies=[]
         )
         
         # Setup disconnect handler
@@ -104,40 +106,66 @@ class BrowserManager:
             task.cancel()
         
         # Respawn with the same event URLs
-        asyncio.create_task(self._respawn_browser(browser_instance.event_urls))
+        asyncio.create_task(self._respawn_browser(browser_instance.event_urls, browser_instance.proxies))
     
-    async def _respawn_browser(self, event_urls: List[str]):
-        new_browser = await self._spawn_browser()
+    async def _respawn_browser(self, event_urls: List[str], proxies: List[str]):
+        new_browser = await self._spawn_browser() # new browser doesn't come with event_urls
         if new_browser:
             new_browser.event_urls = event_urls
-            await self._dispatch_events_to_browser(new_browser)
+            await self._dispatch_events_to_browser(new_browser, event_urls, proxies)
+        self.logger.info(f"Browser respawned with events {event_urls}")
     
-    async def _dispatch_events_to_browser(self, browser_instance: BrowserInstance):
+    async def _dispatch_events_to_browser(self, browser_instance: BrowserInstance, event_urls: list[str] = [], proxies: List[str] = []):
         if not self.all_event_urls:
             return
             
+        if event_urls: # this is a respawn. Just respawn all the event_urls in the prev browser
+            browser_instance.event_urls.extend(event_urls)
+            browser_instance.proxies.extend(proxies)
+            browser_instance.proxy_manager = ProxyManager(browser_instance.browser, proxies_to_dispatch) 
+            for event_url in event_urls:
+                task = asyncio.create_task(self._run_event_manager(
+                    event_url, 
+                    browser_instance.proxy_manager,
+                    lambda url=event_url: self.logger.info(f"Initial loading complete! {url}")
+                ))
+                browser_instance.tasks.append(task)
+
+            return
+        
         # Calculate how many events to assign to this browser
         if self.events_per_browser is None:
             # Distribute events evenly across all browsers
-            events_per_browser = len(self.all_event_urls) // len(self.active_browsers) + 1
+            events_per_browser = len(self.all_event_urls) // self.num_browsers + 1
         else:
             events_per_browser = self.events_per_browser
+
+        # Calculate how many proxies to assign to this browser
+        proxies_per_browser = len(self.all_proxies) // self.num_browsers + 1
             
         events_to_dispatch = self.all_event_urls[:events_per_browser]
         self.all_event_urls = self.all_event_urls[events_per_browser:]
+
+        proxies_to_dispatch = self.all_proxies[:proxies_per_browser]
+        self.all_proxies = self.all_proxies[proxies_per_browser:]
+
         browser_instance.event_urls.extend(events_to_dispatch)
-        
+        browser_instance.proxies.extend(proxies_to_dispatch)
+
+        browser_instance.proxy_manager = ProxyManager(browser_instance.browser, proxies_to_dispatch) 
         for event_url in events_to_dispatch:
             task = asyncio.create_task(self._run_event_manager(
+                browser_instance.browser,
                 event_url, 
                 browser_instance.proxy_manager,
                 lambda url=event_url: self.logger.info(f"Initial loading complete! {url}")
             ))
             browser_instance.tasks.append(task)
     
-    async def _run_event_manager(self, event_url: str, proxy_manager: ProxyManager, callback: Callable):
+    async def _run_event_manager(self,browser:Browser, event_url: str, proxy_manager: ProxyManager, callback: Callable):
         manager = EventManager(
             event_url,
+            browser,
             proxy_manager,
             self.debug_ui,
             self.network_sem,

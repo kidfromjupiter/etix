@@ -15,7 +15,8 @@ load_dotenv()
 HEADLESS_MODE = True
 
 async def main():
-    manager = BrowserManager(max_browsers=4, events_per_browser=5)
+
+    manager = BrowserManager(max_browsers=10, events_per_browser=5)
     await manager.initialize()
     
     # Keep main running while there are active tasks
@@ -23,4 +24,4 @@ async def main():
         await asyncio.sleep(1)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(), debug=True)

@@ -5,6 +5,14 @@ import httpx
 from playwright.async_api import Browser, BrowserContext, Page, Response
 
 import logger
+@property
+def is_connected(self: BrowserContext) -> bool:
+    try:
+        # A safe way to check if context is alive; `pages()` raises if context is closed
+        _ = self.pages()
+        return True
+    except Exception:
+        return False
 
 class ProxyManager:
     def __init__(self, browser: Browser, proxies: List[Dict[str, str]], max_tabs_per_context: int = 10):
@@ -273,3 +281,22 @@ class ProxyManager:
                 self.proxies_being_assigned.discard(self._proxy_to_key(proxy))
             self.logger.warning(f"Proxy check failed for {proxy['server']}: {e}")
             return False
+
+    def _get_context_for_page(self, page: Page) -> Optional[BrowserContext]:
+        """
+        Given a Playwright Page, return its corresponding BrowserContext.
+
+        Args:
+            page: The Playwright Page object.
+
+        Returns:
+            The BrowserContext associated with the Page, or None if not found.
+        """
+        for context, tabs in self.context_to_tabs.items():
+            if page in tabs:
+                return context
+        return None
+
+    async def check_context_status(self, tab: Page):
+        ctx = self._get_context_for_page(tab)
+        return False if ctx == None else True 

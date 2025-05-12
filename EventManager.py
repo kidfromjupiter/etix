@@ -8,9 +8,11 @@ from area_seating_scraper import AreaSeatingScraper
 from debug_ui import DebugUI
 from logger import setup_logger
 import httpx
-from playwright.async_api import async_playwright, Page, Request
+from playwright.async_api import  Page, Request, Browser
 import aiohttp
 from dotenv import load_dotenv
+
+from playwright._impl._errors import TargetClosedError
 
 load_dotenv()
 
@@ -21,9 +23,10 @@ EVENT_URL = "https://www.etix.com/ticket/p/61485410/ludacris-with-special-guests
 HEADLESS_MODE = True
 
 class EventManager:
-    def __init__(self, base_url,  proxy_manager, debug_ui, network_sem, initial_load_complete_callback):
+    def __init__(self, base_url,browser,  proxy_manager, debug_ui, network_sem, initial_load_complete_callback):
         self.playwright = None
         self.base_url = base_url
+        self.browser: Browser = browser
         self.network_sem: PrioritySemaphore = network_sem
         self.context = None
         self.page = None
@@ -48,7 +51,7 @@ class EventManager:
         async with page.expect_navigation() as _:
             await button.click()
             try:
-                await asyncio.wait_for(self.has_manifest_image_event.wait(), timeout=5000)
+                await asyncio.wait_for(self.has_manifest_image_event.wait(), timeout=5)
                 #await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000)
                 return True
             except:
@@ -59,7 +62,7 @@ class EventManager:
     async def check_manifest_image(self, page: Page):
         try:
             #await page.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]')
-            await asyncio.wait_for(self.has_manifest_image_event.wait(), timeout=5000)
+            await asyncio.wait_for(self.has_manifest_image_event.wait(), timeout=5)
             return True
         except:
             map_found = await self.look_for_map(page)
@@ -95,14 +98,14 @@ class EventManager:
 
                 self.retries_remaining = 3 # resetting the retries
                 await self.create_event(time_str)
-                seating_scraper = AreaSeatingScraper(self.page,  self.post_to_fastapi,
+                seating_scraper = AreaSeatingScraper(self.browser, self.page,  self.post_to_fastapi,
                                                       self.proxy_manager, self.base_url, self.debug_ui,
                                                       self.network_sem,
                                                       self.initial_load_complete_callback)
                 await seating_scraper.run()
-            except Exception as e:
+            except TimeoutError:
                 self.retries_remaining -= 1
-                self.logger.error(f"Something went wrong with event {self.base_url}: {e}.\nRetries remaining: {self.retries_remaining}")
+                self.logger.error(f"Something went wrong with event {self.base_url}:\nRetries remaining: {self.retries_remaining}")
                 #await self.page.screenshot(path=f"./.fails/{random.randint(1,1000)}.jpg", full_page=True, timeout=0)
                 # need to pass timeout 0. Otherwise, another timeout error
 
@@ -130,46 +133,29 @@ class EventManager:
             self.has_manifest_image_event.set()
             
     async def run(self):
-        await self.init_browser()
-        await self.page.goto(self.base_url)
-        self.page.on('request', lambda req: self._on_request(req))
-        await self.run_main_monitor()
+        while True:
+            try:
+                await self.init_browser()
+                async with self.network_sem.priority(8):
+                    await self.page.goto(self.base_url)
+                    self.page.on('request', lambda req: self._on_request(req))
+                await self.run_main_monitor()
+                break  # If everything finishes without crash, exit the loop
+            except TargetClosedError:
+                if self.browser.is_connected():
+                    self.logger.warning(f"Browser is up. Page or context crashed. Respawning..")
+                    # we can continue after a page/context crash since proxy manager create a new context if context has crashed.
+                else:
+                    self.logger.warning(f"Browser crashed... Exiting ")
+                    break
+            except Exception as e:
+                self.logger.error(f"Unhandled exception in run loop: {e}")
+                if self.page:
+                    try:
+                        await self.page.close()
+                        self.logger.info(f"Closing page: {self.base_url}")
+                    except:
+                        pass
 
-    async def close(self):
-        self.logger.info("Shutting down...")
-        await self.client.aclose()
-        await self.playwright.stop()
 
 
-async def main():
-    lg = setup_logger("Main")
-    lg.propagate = False
-    lg.info("Launching browser...")
-    playwright = await async_playwright().start()
-    browser = await playwright.chromium.launch(headless=HEADLESS_MODE)
-    debug_ui = DebugUI()
-
-    with open("proxy_list") as proxy_list:
-        proxies = proxy_list.readlines()
-        sanitized_proxies = []
-        for proxy in proxies:
-            pattern = r"(\d.+):(\w+):(\w+)"
-            matches = re.search(pattern, proxy)
-            sanitized_proxies.append({
-                "server": f'http://{matches.group(1)}',
-                "username": matches.group(2),
-                "password": matches.group(3)
-            })
-        proxy_manager = ProxyManager(
-            browser, sanitized_proxies
-        )
-    manager = EventManager(EVENT_URL,
-                           proxy_manager,
-                            debug_ui
-
-                           )
-    lg.info("Browser launched")
-    await manager.run()
-
-if __name__ == "__main__":
-    asyncio.run(main())

@@ -1,6 +1,6 @@
 import logging
 
-def setup_logger(name, level=logging.INFO):
+def setup_logger(name, level=logging.DEBUG, logfile='logfile.log'):
     """
     Configure and return a logger with the specified name and level
     
@@ -18,7 +18,7 @@ def setup_logger(name, level=logging.INFO):
         logger.setLevel(level)
 
         # Create file handler
-        handler = logging.FileHandler('logfile.log')
+        handler = logging.FileHandler(logfile)
         handler.setLevel(level)
 
         # Create formatter
