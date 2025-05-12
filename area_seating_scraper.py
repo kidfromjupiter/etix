@@ -65,9 +65,6 @@ class AreaSeatingScraper:
         self.data_callback = data_callback
         self.proxy_manager = proxy_manager
         self.prev_available_area_numbers = []
-        self.captcha_solved_event = asyncio.Event()  # Event to track CAPTCHA resolution
-        self.looking_for_captcha_event = asyncio.Event()
-        self.captcha_solved_event.set()  # Initially set to True (no CAPTCHA)
         self.ready_areas = []
         self.initial_loading_complete_dict: dict[str, bool] = {}
         self.initial_loading_complete_callback = initial_load_complete_callback
@@ -85,8 +82,6 @@ class AreaSeatingScraper:
                 await asyncio.sleep(1)
 
     async def spawn_tab(self, area_number):
-        # waiting till captcha is solved ( if there is )
-        await self.captcha_solved_event.wait()
 
         try:
             new_tab: Page = await self.proxy_manager.create_tab()
@@ -213,7 +208,6 @@ class AreaSeatingScraper:
                 if await self.check_for_captcha(tab, area_number):
                     await self.handle_captcha(tab,area_number)
 
-                await self.captcha_solved_event.wait()
 
                 await asyncio.sleep(0)
                 try:
@@ -363,7 +357,6 @@ class AreaSeatingScraper:
 
     async def handle_captcha(self, tab: Page, area_number: str):
         """Handle CAPTCHA detection and wait for resolution"""
-        self.captcha_solved_event.clear()  # This will make all waits block
 
         self.logger.warning(f"CAPTCHA detected! Pausing operations in {area_number}")
         await self.debug_ui.update_status(self.base_url,area_number,f"CAPTCHA detected! Pausing operations." )
@@ -427,11 +420,9 @@ class AreaSeatingScraper:
             finally:
                 self.logger.info("Resuming operations..")
                 await self.debug_ui.update_status(self.base_url,area_number,f"Resuming operations.." )
-                self.captcha_solved_event.set()  # Resume operations
         except TimeoutError:
             self.logger.info(f"Captcha wasn't fully launched. Resuming operations on {area_number}")
             await self.debug_ui.update_status(self.base_url,area_number,f"Captcha wasn't fully launched. Resuming operations" )
-            self.captcha_solved_event.set()  # Resume operations
 
     async def check_for_captcha(self, page: Page, area_number: str) -> bool:
         """Check if a CAPTCHA is present on the page"""
@@ -447,12 +438,10 @@ class AreaSeatingScraper:
             else:
                 self.logger.info(f"No captcha found in area {area_number}")
                 await self.debug_ui.update_status(self.base_url,area_number,f"No captcha found" )
-                self.looking_for_captcha_event.set()
             return False
         except TimeoutError:
             self.logger.info("Recaptcha check timed out. Seems to be no captcha")
             await self.debug_ui.update_status(self.base_url,area_number,f"Recaptcha check timed out. Seems to be no captcha" )
-            self.looking_for_captcha_event.set()
             return False
         except TargetClosedError:
             # pass on TargetClosedError to top level error handlers
@@ -460,5 +449,4 @@ class AreaSeatingScraper:
         except Exception as e:
             self.logger.error(f"Error checking for CAPTCHA: {e}")
             await self.debug_ui.update_status(self.base_url,area_number,f"Error checking for CAPTCHA: {str(e)[:50]}..." )
-            self.looking_for_captcha_event.set()
             return False
