@@ -1,6 +1,6 @@
 import logging
 
-def setup_logger(name, level=logging.DEBUG, logfile='logfile.log'):
+def setup_logger(name, level=logging.DEBUG, logfile='./logs/logfile.log'):
     """
     Configure and return a logger with the specified name and level
     

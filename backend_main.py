@@ -17,7 +17,7 @@ from os import getenv
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 def get_db():
     db = SessionLocal()

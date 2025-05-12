@@ -1,10 +1,14 @@
 import asyncio
+from os import getenv
 import logging
 from typing import Dict, List, Optional, Set, Tuple
 import httpx
 from playwright.async_api import Browser, BrowserContext, Page, Response
 
 import logger
+from dotenv import load_dotenv
+
+load_dotenv(override=True)
 @property
 def is_connected(self: BrowserContext) -> bool:
     try:
@@ -78,6 +82,7 @@ class ProxyManager:
         pw_proxy = self._proxy_to_playwright_format(proxy)
         context = await self.browser.new_context(proxy=pw_proxy)
         context.on("close",lambda ctx: self._context_closed_event(ctx) )
+        context.set_default_navigation_timeout(int(getenv("DEFAULT_NAVIGATION_TIMEOUT",300000)))
         self.context_to_proxy[context] = proxy
         self.proxy_to_contexts[self._proxy_to_key(proxy)].append(context)
         self.context_to_tabs[context] = []

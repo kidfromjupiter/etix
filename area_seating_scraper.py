@@ -7,9 +7,9 @@ from debug_ui import DebugUI
 from priority_semaphore import PrioritySemaphore
 from proxy_manager import ProxyManager
 
-load_dotenv()
+load_dotenv(override=True)
 
-from playwright.async_api import Page, TimeoutError
+from playwright.async_api import Page, TimeoutError, Browser
 from playwright._impl._errors import TargetClosedError
 
 from capsolver import Capsolver
@@ -42,10 +42,16 @@ async def wait_for_function(page: Page, function_name, timeout=5000):
         timeout=timeout
     )
 
+async def wait_for_window_property(page: Page, prop_name: str, timeout=5000):
+    await page.wait_for_function(
+        f"() => window.hasOwnProperty('{prop_name}')",
+        timeout=timeout
+    )
 
 class AreaSeatingScraper:
     def __init__(self,browser, page: Page, data_callback, proxy_manager: ProxyManager, base_url, debug_ui, network_sem, callback):
         self.last_rate_limit_time = None
+        self.browser: Browser = browser
         self.page = page
         self.base_url = base_url
         self.network_sem: PrioritySemaphore = network_sem
@@ -57,55 +63,66 @@ class AreaSeatingScraper:
         self.data_callback = data_callback
         self.proxy_manager = proxy_manager
         self.prev_available_area_numbers = []
-        self.captcha_solved_event = asyncio.Event()  # Event to track CAPTCHA resolution
-        self.looking_for_captcha_event = asyncio.Event()
-        self.captcha_solved_event.set()  # Initially set to True (no CAPTCHA)
         self.ready_areas = []
-        self.initial_spawning_complete = False
+        self.initial_loading_complete_dict: dict[str, bool] = {}
+        self.initial_loading_complete_callback = callback
+        self.initial_spawning_complete = False # spawning is just for spawning the tabs. initial loading is different
         self.section_blacklist = [] # sections that should not be respawned
         self.spawn_target_closed_errors: dict[str, int] ={}
+        self.quit_flag = False
 
     async def spawn_tab(self, area_number):
-        # waiting till captcha is solved ( if there is )
-        await self.captcha_solved_event.wait()
 
-        new_tab: Page = await self.proxy_manager.create_tab()
+        try:
+            new_tab: Page = await self.proxy_manager.create_tab()
 
-        async with self.network_sem.priority(INITIAL_LOADING_PRIORITY):
-            try:
-                await new_tab.goto(self.base_url) 
-            except TargetClosedError:
-                await self.debug_ui.update_status(self.base_url,area_number,f"Initial load fail. Target or context crashed. Will respawn" )
-                return
-            await new_tab.wait_for_load_state("domcontentloaded")
-            # url changes to a common URL when seating chart isn't displayed on first load. So 
-            # cant use self.page.url
-            await self.debug_ui.update_status(self.base_url,area_number,f"Waiting till initial loading complete..." )
-            try:
-                await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: checking for map " )
-                await new_tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
-            except TimeoutError:
-                try:
-                    #await new_tab.screenshot(path=f"./no_map/{random.randint(0,1000)}.jpg", full_page=True)
-                    await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: no map, checking for ticket type " )
-                    await new_tab.wait_for_selector('ul[id="ticket-type"]')
-                except TimeoutError as e:
-                    self.logger.error(f"Error in spawn_tab for area {area_number}: {e}")
-                    await self.debug_ui.update_status(self.base_url,area_number,f"Error in monitor_tab for area {str(e)[:50]}..." )
-                    await self.proxy_manager.close_tab(new_tab)
-                    if new_tab in self.tabs.values():
-                        self.tabs.pop(area_number)
+            async with self.network_sem.priority(INITIAL_LOADING_PRIORITY):
+                    await new_tab.goto(self.base_url) 
+                    await new_tab.wait_for_load_state("domcontentloaded")
+                    # url changes to a common URL when seating chart isn't displayed on first load. So 
+                    # cant use self.page.url
+                    await self.debug_ui.update_status(self.base_url,area_number,f"Waiting till initial loading complete..." )
+                    try:
+                        await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: checking for map " )
+                        await new_tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
+                    except TimeoutError:
+                        try:
+                            #await new_tab.screenshot(path=f"./no_map/{random.randint(0,1000)}.jpg", full_page=True)
+                            await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: no map, checking for ticket type " )
+                            await new_tab.wait_for_selector('ul[id="ticket-type"]')
+                        except TimeoutError as e:
+                            self.logger.error(f"Error in spawn_tab for area {area_number}: {e}")
+                            await self.debug_ui.update_status(self.base_url,area_number,f"Error in monitor_tab for area {str(e)[:50]}..." )
+                            await self.proxy_manager.close_tab(new_tab)
+                            if new_tab in self.tabs.values():
+                                self.tabs.pop(area_number)
+                            return
+                    self.tabs[area_number] = new_tab
+
+            # DO NOT PUT THIS SNIPPET INSIDE NETWORK_SEM. IT WILL HANG. 
+            # navigate_to_seating_manifest already uses network sem
+            await self.navigate_to_seating_manifest(new_tab, area_number)
+
+        except TargetClosedError:
+            if self.browser.is_connected():
+                if self.proxy_manager.check_context_status(new_tab):
+                    await self.debug_ui.update_status(self.base_url,area_number,f"Initial load fail. Page crashed" )
                     return
-
-        self.tabs[area_number] = new_tab
-        await self.navigate_to_seating_manifest(new_tab, area_number)
+                else:
+                    await self.debug_ui.update_status(self.base_url,area_number,f"Initial load fail. Context crashed" )
+                    self.quit_flag = True
+                    return
+            else:
+                await self.debug_ui.update_status(self.base_url,area_number,f"Initial load fail. browser crashed" )
+                self.quit_flag = True
+                return
 
     async def run(self):
 
         await self.debug_ui.update_status(self.base_url,"main", "Waiting till loading finish..")
         await self.page.wait_for_load_state("networkidle")
 
-        while True:
+        while not self.quit_flag:
             # Some pages don't load the manifest automatically. You need to navigate to it
             await self.seating_chart_selected(self.page)
 
@@ -150,9 +167,11 @@ class AreaSeatingScraper:
                 await self.page.reload()
                 await self.debug_ui.update_status(self.base_url,"main", "Waiting till reloading finish..")
                 await self.page.wait_for_load_state("networkidle")
+        else:
+            self.logger.error(f"AreaSeatingScraper quit because of critical error: {self.base_url}")
 
     async def reload_tab_and_monitor(self, area_number: str):
-        while True:
+        while not self.quit_flag:
             #await self.debug_ui.update_status(self.base_url,"open tabs", str(self.tabs.keys()))
             if area_number not in self.ready_areas:
                 await asyncio.sleep(1)
@@ -167,32 +186,30 @@ class AreaSeatingScraper:
 
             self.logger.info(f"Reloading area {area_number} for updates..")
             await self.debug_ui.update_status(self.base_url,area_number,"Reloading area for updates.." )
-
-            async with self.network_sem.priority(TAB_RELOAD_PRIORITY):
-                try:
-                    await tab.reload()
-                except TimeoutError:
-                    self.logger.error(f"Got timeout error in reload. Try reducing the concurrency semaphore.\n"
-                                      f"Section: {area_number}, event: {self.base_url}.")
-                    await self.debug_ui.update_status(self.base_url, area_number, f"Got timeout error in reload."
-                                                f"Try reducing the concurrency semaphore.")
-                    continue # try going for another round
-                except TargetClosedError:
-                    self.logger.warning(f"Context or page apparently closed. Setting to respawn...")
-                    await self.debug_ui.update_status(self.base_url,area_number,f"Context or page apparently closed. Setting to respawn..." )
-                    await self.proxy_manager.close_tab(tab)
-                    if area_number in self.tabs: self.tabs.pop(area_number)
-                    return
-
-
-            # Check for CAPTCHA on reload
-            if await self.check_for_captcha(tab, area_number):
-                await self.handle_captcha(tab,area_number)
-
-            await self.captcha_solved_event.wait()
-
-            await asyncio.sleep(0)
             try:
+                async with self.network_sem.priority(TAB_RELOAD_PRIORITY):
+                    try:
+                        await tab.reload()
+                    except TimeoutError:
+                        self.logger.error(f"Got timeout error in reload. Try reducing the concurrency semaphore.\n"
+                                          f"Section: {area_number}, event: {self.base_url}.")
+                        await self.debug_ui.update_status(self.base_url, area_number, f"Got timeout error in reload."
+                                                    f"Try reducing the concurrency semaphore.")
+                        continue # try going for another round
+
+
+                # Check for CAPTCHA on reload
+                if await self.check_for_captcha(tab, area_number):
+                    await self.handle_captcha(tab,area_number)
+
+
+                await asyncio.sleep(0)
+                try:
+                    await tab.wait_for_load_state("networkidle")
+                    await wait_for_window_property(tab, 'rowSeatStatus', timeout=3000)
+                except TimeoutError:
+                    # Probably an error page
+                    continue
                 seats = await scrape_section_data(tab, area_number)
                 self.logger.info(f"Extracted data for section {area_number}")
                 await self.debug_ui.update_status(self.base_url,area_number,"Extracted data" )
@@ -202,6 +219,24 @@ class AreaSeatingScraper:
                     self.logger.info(f"Sent data to backend")
                     await self.debug_ui.update_status(self.base_url,area_number,"Sent data to backend" )
                 else: self.logger.info("Didn't find anything")
+            except TargetClosedError:
+                if self.browser.is_connected():
+                    if self.proxy_manager.check_context_status(tab):
+                        await self.debug_ui.update_status(self.base_url,area_number,f"reload fail. Page crashed" )
+                        self.logger.warning(f"Page crashed. Respawning")
+                        await self.debug_ui.update_status(self.base_url,area_number,f"Page crashed. Respawning" )
+                        await self.proxy_manager.close_tab(tab)
+                        if area_number in self.tabs: self.tabs.pop(area_number)
+                        return
+                    else:
+                        await self.debug_ui.update_status(self.base_url,area_number,f"reload fail. Context crashed" )
+                        self.quit_flag = True
+                        return
+                else:
+                    await self.debug_ui.update_status(self.base_url,area_number,f"reload fail. browser crashed" )
+                    self.quit_flag = True
+                    return
+
             except Exception as e:
                 self.logger.error(f"Error in tab {area_number}: {e}")
                 await self.debug_ui.update_status(self.base_url,area_number,f"Error in tab {str(e)[:50]}..." )
@@ -260,7 +295,7 @@ class AreaSeatingScraper:
                     if tab in self.tabs.values():
                         self.tabs.pop(area_number)
                     return
-                async with tab.expect_navigation(timeout= 60000 if DEBUG else 30000) as _:
+                async with tab.expect_navigation() as _:
                     await wait_for_function(tab, 'chooseSection')
 
 
@@ -292,8 +327,22 @@ class AreaSeatingScraper:
 
             await tab.route("**/*", route_intercept)
 
-            asyncio.create_task(self.reload_tab_and_monitor(area_number))
+            self.initial_loading_complete_dict[area_number] = True
+            asyncio.create_task(self.reload_tab_and_monitor(area_number),name=f"reload_tab_and_monitor_{area_number}:{self.base_url}")
 
+        except TargetClosedError:
+            if self.browser.is_connected():
+                await self.debug_ui.update_status(self.base_url,area_number,f"Initial load fail. Browser crashed" )
+                self.quit_flag = True
+            elif self.proxy_manager.check_context_status(tab):
+                await self.debug_ui.update_status(self.base_url,area_number,f"Initial load fail. Context crashed" )
+                self.quit_flag = True
+            else:
+                self.logger.warning(f"Page crashed. Respawning")
+                await self.debug_ui.update_status(self.base_url,area_number,f"Page crashed. Respawning" )
+                await self.proxy_manager.close_tab(tab)
+                if area_number in self.tabs: self.tabs.pop(area_number)
+                return
         except Exception as e:
             self.logger.error(f"Error in monitor_tab for area {area_number}: {e}")
             await self.debug_ui.update_status(self.base_url,area_number,f"Error in monitor_tab for area {str(e)[:50]}..." )
@@ -304,7 +353,6 @@ class AreaSeatingScraper:
 
     async def handle_captcha(self, tab: Page, area_number: str):
         """Handle CAPTCHA detection and wait for resolution"""
-        self.captcha_solved_event.clear()  # This will make all waits block
 
         self.logger.warning(f"CAPTCHA detected! Pausing operations in {area_number}")
         await self.debug_ui.update_status(self.base_url,area_number,f"CAPTCHA detected! Pausing operations." )
@@ -368,11 +416,9 @@ class AreaSeatingScraper:
             finally:
                 self.logger.info("Resuming operations..")
                 await self.debug_ui.update_status(self.base_url,area_number,f"Resuming operations.." )
-                self.captcha_solved_event.set()  # Resume operations
         except TimeoutError:
             self.logger.info(f"Captcha wasn't fully launched. Resuming operations on {area_number}")
             await self.debug_ui.update_status(self.base_url,area_number,f"Captcha wasn't fully launched. Resuming operations" )
-            self.captcha_solved_event.set()  # Resume operations
 
     async def check_for_captcha(self, page: Page, area_number: str) -> bool:
         """Check if a CAPTCHA is present on the page"""
@@ -388,15 +434,15 @@ class AreaSeatingScraper:
             else:
                 self.logger.info(f"No captcha found in area {area_number}")
                 await self.debug_ui.update_status(self.base_url,area_number,f"No captcha found" )
-                self.looking_for_captcha_event.set()
             return False
         except TimeoutError:
             self.logger.info("Recaptcha check timed out. Seems to be no captcha")
             await self.debug_ui.update_status(self.base_url,area_number,f"Recaptcha check timed out. Seems to be no captcha" )
-            self.looking_for_captcha_event.set()
             return False
+        except TargetClosedError:
+            # pass on TargetClosedError to top level error handlers
+            raise TargetClosedError
         except Exception as e:
             self.logger.error(f"Error checking for CAPTCHA: {e}")
             await self.debug_ui.update_status(self.base_url,area_number,f"Error checking for CAPTCHA: {str(e)[:50]}..." )
-            self.looking_for_captcha_event.set()
             return False

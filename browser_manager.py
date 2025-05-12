@@ -28,15 +28,18 @@ class BrowserManager:
         self.active_browsers: List[BrowserInstance] = []
         self.all_event_urls: List[str] = []
         self.all_proxies: List[str] = []
-        self.logger = setup_logger("BrowserManager")
+        self.logger = setup_logger("BrowserManager", logfile='./logs/browser_manager.log')
         self.network_sem = PrioritySemaphore(8)
         self.debug_ui = DebugUI()
         self.loading_lock = asyncio.Semaphore(1)
         self.num_browsers: int = 0 
+        self.playwright = None
+
     async def initialize(self):
         # Load proxies and event URLs
         await self._load_proxies()
         await self._load_event_urls()
+        self.playwright = await async_playwright().start()
         #asyncio.create_task(self.debug_ui.run_async())
         
         # Calculate how many browsers we actually need
@@ -74,14 +77,13 @@ class BrowserManager:
             return None
             
         self.logger.info("Launching new browser...")
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(headless=HEADLESS_MODE)
+        browser = await self.playwright.chromium.launch(headless=HEADLESS_MODE)
         
         # proxy manager is setup later when dispatching events 
 
         # Create browser instance
         browser_instance = BrowserInstance(
-            playwright_instance=playwright,
+            playwright_instance=self.playwright,
             browser=browser,
             proxy_manager=None,
             tasks=[],
@@ -96,7 +98,7 @@ class BrowserManager:
         return browser_instance
     
     def _handle_browser_disconnect(self, browser_instance: BrowserInstance):
-        self.logger.error(f"Browser disconnected, respawning...")
+        self.logger.error(f"Browser disconnected with {browser_instance.event_urls} events\n respawning...")
         
         # Remove from active browsers
         self.active_browsers.remove(browser_instance)
@@ -116,15 +118,16 @@ class BrowserManager:
         self.logger.info(f"Browser respawned with events {event_urls}")
     
     async def _dispatch_events_to_browser(self, browser_instance: BrowserInstance, event_urls: list[str] = [], proxies: List[str] = []):
-        if not self.all_event_urls:
+        if not self.all_event_urls and not event_urls:
             return
             
         if event_urls: # this is a respawn. Just respawn all the event_urls in the prev browser
             browser_instance.event_urls.extend(event_urls)
             browser_instance.proxies.extend(proxies)
-            browser_instance.proxy_manager = ProxyManager(browser_instance.browser, proxies_to_dispatch) 
+            browser_instance.proxy_manager = ProxyManager(browser_instance.browser, proxies) 
             for event_url in event_urls:
                 task = asyncio.create_task(self._run_event_manager(
+                    browser_instance.browser,
                     event_url, 
                     browser_instance.proxy_manager,
                     lambda url=event_url: self.logger.info(f"Initial loading complete! {url}")

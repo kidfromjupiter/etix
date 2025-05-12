@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 
 from playwright._impl._errors import TargetClosedError
 
-load_dotenv()
+load_dotenv(override=True)
 
 from priority_semaphore import PrioritySemaphore
 from proxy_manager import ProxyManager
@@ -136,8 +136,8 @@ class EventManager:
         while True:
             try:
                 await self.init_browser()
-                async with self.network_sem.priority(8):
-                    await self.page.goto(self.base_url)
+                async with self.network_sem.priority(7):
+                    await self.page.goto(self.base_url) # waiting for 10 minutes
                     self.page.on('request', lambda req: self._on_request(req))
                 await self.run_main_monitor()
                 break  # If everything finishes without crash, exit the loop
