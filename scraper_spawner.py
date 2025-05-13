@@ -9,7 +9,7 @@ HEADLESS_MODE = True
 
 async def main():
 
-    manager = BrowserManager(max_browsers=60, events_per_browser=2)
+    manager = BrowserManager(max_browsers=1, events_per_browser=50)
     await manager.initialize()
     
     # Keep main running while there are active tasks

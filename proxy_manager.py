@@ -1,10 +1,12 @@
 import asyncio
+from collections import defaultdict
 from os import getenv
 import logging
 from typing import Dict, List, Optional, Set, Tuple
 import httpx
 from playwright.async_api import Browser, BrowserContext, Page, Response
 
+from debug_ui import DebugUI
 import logger
 from dotenv import load_dotenv
 
@@ -19,7 +21,7 @@ def is_connected(self: BrowserContext) -> bool:
         return False
 
 class ProxyManager:
-    def __init__(self, browser: Browser, proxies: List[Dict[str, str]], max_tabs_per_context: int = 10):
+    def __init__(self, browser: Browser, debug_ui: DebugUI, proxies: List[Dict[str, str]], max_tabs_per_context: int = 10):
         """
         Initialize the ProxyManager with a Playwright Browser instance and a list of proxies.
 
@@ -37,6 +39,7 @@ class ProxyManager:
             max_tabs_per_context: Maximum number of tabs allowed per browser context
         """
         self.browser = browser
+        self.debug_ui = debug_ui
         self.proxies = proxies
         self.max_tabs_per_context = max_tabs_per_context
 
@@ -184,6 +187,8 @@ class ProxyManager:
         if url:
             await page.goto(url)
 
+        stats = self.get_context_stats()
+        self.debug_ui.update_context_stats_widget(stats['total_tabs'],stats['avg_tabs_per_proxy'])
         return page
 
     async def _page_crashed_event(self, page: Page):
@@ -198,6 +203,9 @@ class ProxyManager:
         if not context:
             self.logger.error("Page not found in any managed context. Probably already closed")
             return
+
+        stats = self.get_context_stats()
+        self.debug_ui.update_context_stats_widget(stats['total_tabs'],stats['avg_tabs_per_proxy'])
 
         async with self.context_management_lock:
             self.context_to_tabs[context].remove(page)
@@ -223,6 +231,9 @@ class ProxyManager:
             del self.context_to_proxy[context]
             del self.context_to_tabs[context]
 
+            stats = self.get_context_stats()
+            self.debug_ui.update_context_stats_widget(stats['total_tabs'],stats['avg_tabs_per_proxy'])
+
     async def close_tab(self, page: Page) -> None:
         """Close a specific tab and clean up if its context becomes empty."""
         context = None
@@ -247,6 +258,9 @@ class ProxyManager:
                 self.logger.info("Context empty. Closing context...")
                 await self.close_context(context)
 
+                stats = self.get_context_stats()
+                self.debug_ui.update_context_stats_widget(stats['total_tabs'],stats['avg_tabs_per_proxy'])
+
     async def close_context(self, context: BrowserContext) -> None:
         """Close a browser context and clean up tracking."""
         if context not in self.context_to_proxy:
@@ -264,6 +278,9 @@ class ProxyManager:
             self.proxy_to_contexts[proxy_key].remove(context)
             del self.context_to_proxy[context]
             del self.context_to_tabs[context]
+
+            stats = self.get_context_stats()
+            self.debug_ui.update_context_stats_widget(stats['total_tabs'],stats['avg_tabs_per_proxy'])
 
         await context.close()
         self.logger.info("Context closed")
@@ -302,6 +319,24 @@ class ProxyManager:
                 return context
         return None
 
+    def get_context_stats(self) -> Dict[str, Dict]:
+        """Get statistics about all contexts."""
+        proxy_to_tab_counts = defaultdict(int)
+
+        for context, proxy in self.context_to_proxy.items():
+            proxy_key = self._proxy_to_key(proxy)
+            proxy_to_tab_counts[proxy_key] += len(self.context_to_tabs[context])
+
+
+        total_tabs = sum(proxy_to_tab_counts.values())
+        avg_tabs_per_proxy = (
+            total_tabs / len(proxy_to_tab_counts) if proxy_to_tab_counts else 0
+        )
+
+        return {
+            "total_tabs": total_tabs,
+            "avg_tabs_per_proxy": avg_tabs_per_proxy,
+        }
     async def check_context_status(self, tab: Page):
         ctx = self._get_context_for_page(tab)
         return False if ctx == None else True 

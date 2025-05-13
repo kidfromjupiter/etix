@@ -40,7 +40,7 @@ class BrowserManager:
         await self._load_proxies()
         await self._load_event_urls()
         self.playwright = await async_playwright().start()
-        #asyncio.create_task(self.debug_ui.run_async())
+        asyncio.create_task(self.debug_ui.run_async())
         
         # Calculate how many browsers we actually need
         num_browsers = min(
@@ -124,7 +124,7 @@ class BrowserManager:
         if event_urls: # this is a respawn. Just respawn all the event_urls in the prev browser
             browser_instance.event_urls.extend(event_urls)
             browser_instance.proxies.extend(proxies)
-            browser_instance.proxy_manager = ProxyManager(browser_instance.browser, proxies) 
+            browser_instance.proxy_manager = ProxyManager(browser_instance.browser,self.debug_ui, proxies) 
             for event_url in event_urls:
                 task = asyncio.create_task(self._run_event_manager(
                     browser_instance.browser,
@@ -155,7 +155,7 @@ class BrowserManager:
         browser_instance.event_urls.extend(events_to_dispatch)
         browser_instance.proxies.extend(proxies_to_dispatch)
 
-        browser_instance.proxy_manager = ProxyManager(browser_instance.browser, proxies_to_dispatch) 
+        browser_instance.proxy_manager = ProxyManager(browser_instance.browser, self.debug_ui, proxies_to_dispatch) 
         for event_url in events_to_dispatch:
             task = asyncio.create_task(self._run_event_manager(
                 browser_instance.browser,

@@ -7,6 +7,8 @@ from debug_ui import DebugUI
 from priority_semaphore import PrioritySemaphore
 from proxy_manager import ProxyManager
 
+from datetime import datetime
+
 load_dotenv(override=True)
 
 from playwright.async_api import Page, TimeoutError, Browser
@@ -18,6 +20,7 @@ from logger import setup_logger
 DEBUG=True if getenv("DEBUG") == "True" else False
 
 ERROR_URL = "https://etix.com/ticket/online2z/flowError.jsp"
+ERROR_URL2 = "https://www.etix.com/ticket/online2z/flowError.jsp"
 
 
 INITIAL_LOADING_PRIORITY = 9
@@ -70,6 +73,7 @@ class AreaSeatingScraper:
         self.section_blacklist = [] # sections that should not be respawned
         self.spawn_target_closed_errors: dict[str, int] ={}
         self.quit_flag = False
+        self.captcha_detect_times: dict[str, datetime] = {}
 
     async def spawn_tab(self, area_number):
 
@@ -133,6 +137,7 @@ class AreaSeatingScraper:
                     and area_number not in self.section_blacklist):
                     # probably was closed due to some exception and not in section blacklist. Should restart
                     self.logger.warning(f"Respawning previously closed tab {area_number}")
+                    self.debug_ui.update_status(self.base_url, 'main', f"Respawning previously closed tabs..")
                     await self.spawn_tab(area_number)
 
             if available_areas != self.prev_available_area_numbers:
@@ -377,6 +382,8 @@ class AreaSeatingScraper:
                             timeout=120
                         )
                         if solution:
+                            time_since_detection = (datetime.now() - self.captcha_detect_times[area_number]).seconds
+                            self.logger.info(f"area {area_number}, Time to solve since captcha detection: {time_since_detection}s")
                             # automatically finding the recaptcha callback and calling it
                             with open("scripts/getRecaptchaCallback.js") as callback_finder:
                                 results = await tab.evaluate(callback_finder.read())
@@ -430,6 +437,7 @@ class AreaSeatingScraper:
             if element:
                 self.logger.info(f"Found captcha in {area_number}")
                 await self.debug_ui.update_status(self.base_url,area_number,f"Found captcha" )
+                self.captcha_detect_times[area_number] = datetime.now()
                 return True
             else:
                 self.logger.info(f"No captcha found in area {area_number}")
