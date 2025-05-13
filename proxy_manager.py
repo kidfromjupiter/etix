@@ -337,6 +337,6 @@ class ProxyManager:
             "total_tabs": total_tabs,
             "avg_tabs_per_proxy": avg_tabs_per_proxy,
         }
-    async def check_context_status(self, tab: Page):
+    def check_context_status(self, tab: Page):
         ctx = self._get_context_for_page(tab)
         return False if ctx == None else True 

@@ -1,13 +1,21 @@
 import asyncio
 from browser_manager import BrowserManager
 from dotenv import load_dotenv
-
+import os
+import shutil
 
 load_dotenv(override=True)
 
 HEADLESS_MODE = True
 
 async def main():
+    
+    # Housekeeping
+    for dirname in ["logs", "fails"]:
+        if os.path.exists(dirname):
+            shutil.rmtree(dirname)
+        os.makedirs(dirname)
+
 
     manager = BrowserManager(max_browsers=1, events_per_browser=50)
     await manager.initialize()

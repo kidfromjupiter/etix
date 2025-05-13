@@ -1,6 +1,7 @@
 import asyncio
 import random
 from os import getenv
+import re
 from dotenv import load_dotenv
 
 from debug_ui import DebugUI
@@ -74,6 +75,7 @@ class AreaSeatingScraper:
         self.spawn_target_closed_errors: dict[str, int] ={}
         self.quit_flag = False
         self.captcha_detect_times: dict[str, datetime] = {}
+        self.seats_not_found_counter: dict[str, int] = {}
 
     async def spawn_tab(self, area_number):
 
@@ -137,7 +139,7 @@ class AreaSeatingScraper:
                     and area_number not in self.section_blacklist):
                     # probably was closed due to some exception and not in section blacklist. Should restart
                     self.logger.warning(f"Respawning previously closed tab {area_number}")
-                    self.debug_ui.update_status(self.base_url, 'main', f"Respawning previously closed tabs..")
+                    await self.debug_ui.update_status(self.base_url, 'main', f"Respawning previously closed tabs..")
                     await self.spawn_tab(area_number)
 
             if available_areas != self.prev_available_area_numbers:
@@ -212,6 +214,9 @@ class AreaSeatingScraper:
                 try:
                     await tab.wait_for_load_state("networkidle")
                     await wait_for_window_property(tab, 'rowSeatStatus', timeout=3000)
+
+                    if area_number in self.seats_not_found_counter:
+                        del self.seats_not_found_counter[area_number] # Got property. reset counter
                 except TimeoutError:
                     # Probably an error page
                     self.logger.warning(f"Didn't get any seat data {area_number}, {self.base_url}, {tab.url}")
@@ -221,6 +226,30 @@ class AreaSeatingScraper:
                         await self.proxy_manager.close_tab(tab)
                         self.tabs.pop(area_number)
                         return
+
+                    elif area_number in self.seats_not_found_counter:
+                        if self.seats_not_found_counter[area_number] >= 3:
+                            # Didn't find the rowSeatStatus property and not in an ERROR_URL. Should restart page
+                            await self.debug_ui.update_status(self.base_url,area_number,f"Didn't find rowSeatStatus property 3 times, restarting" )
+                            self.logger.warning(f"Didn't find rowSeatStatus property 3 times, restarting. {area_number}, {self.base_url}" )
+                            content =await tab.content()
+
+                            match = re.search(r'/([\d]+)/', self.base_url)
+                            with open(f"./fails/{match.group(1)}_{area_number}.html", 'w') as file:
+                                file.write(content)
+
+                            await self.proxy_manager.close_tab(tab)
+                            self.tabs.pop(area_number)
+                            del self.seats_not_found_counter[area_number] # resetting counter
+                            return
+                        else:
+                            self.seats_not_found_counter[area_number] += 1
+                            await self.debug_ui.update_status(self.base_url,area_number,f"Incrementing seats not found counter" )
+                            self.logger.warning(f"Incrementing seats not found counter, {area_number} {self.base_url}" )
+                    else:
+                        self.seats_not_found_counter[area_number] = 1
+                        await self.debug_ui.update_status(self.base_url,area_number,f"Incrementing seats not found counter" )
+                        self.logger.warning(f"Incrementing seats not found counter, {area_number} {self.base_url}" )
 
                     continue
                 seats = await scrape_section_data(tab, area_number)
@@ -254,7 +283,7 @@ class AreaSeatingScraper:
                 self.logger.error(f"Error in tab {area_number}: {e}")
                 await self.debug_ui.update_status(self.base_url,area_number,f"error in tab {str(e)[:50]}..." )
                 await self.proxy_manager.close_tab(tab)
-                self.tabs.pop(area_number)
+                if area_number in self.tabs: self.tabs.pop(area_number)
                 return
 
     async def seating_chart_selected(self, tab: Page):
