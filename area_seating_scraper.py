@@ -257,7 +257,7 @@ class AreaSeatingScraper:
                 await self.debug_ui.update_status(self.base_url,area_number,"Extracted data" )
                 if isinstance(seats, dict) and 'adjacentSeats' in seats.keys():
                     # event_id will be appended to payload upstream
-                    await self.data_callback({"rows":seats['adjacentSeats'], 'section': area_number})
+                    asyncio.create_task(self.data_callback({"rows":seats['adjacentSeats'], 'section': area_number}))
                     self.logger.info(f"Sent data to backend, {area_number}")
                     await self.debug_ui.update_status(self.base_url,area_number,"Sent data to backend" )
                 else: self.logger.info(f"Didn't find anything, {area_number}")

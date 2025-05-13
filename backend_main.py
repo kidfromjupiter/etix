@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
+import os
 import time
 import uuid
 import re
@@ -14,10 +15,19 @@ from backend.schema import SeatingPayload, EventCreateRequest, EventResponse
 from backend.db import SessionLocal, init_db
 import httpx
 from os import getenv
+from logger import setup_logger
 
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
+
+# creating logfile if isn't already there
+log_path = os.path.join("logs", "fastapi.log")
+if not os.path.exists(log_path):
+    open(log_path, "w").close()
+
+logger = setup_logger("FASTAPI", logfile='./logs/fastapi.log')
+logger.propagate = False
 
 def get_db():
     db = SessionLocal()
@@ -41,7 +51,8 @@ last_reset_time = 0
 remaining_requests = 5
 lock = asyncio.Lock()
 
-
+logger.info(f"Discord webhook url: {DISCORD_WEBHOOK_URL}")
+logger.info(f"Debug enabled: {DEBUG}")
 
 async def flush_buffer():
     global buffer
@@ -51,8 +62,9 @@ async def flush_buffer():
             if buffer:
                 combined_message = "\n\n".join(buffer)
                 buffer = []
+                logger.info(f"Sending message: \n{combined_message}")
                 if not DEBUG:
-                    await send_to_discord(combined_message)
+                    asyncio.create_task(send_to_discord(combined_message))
                 else:
                     print("Buffered Message:\n", combined_message)
 
@@ -87,18 +99,18 @@ async def send_to_discord( message):
                     last_reset_time = float(reset)
 
                 if response.status_code == 429 and retry_after:
-                    print(f"Rate limited for {retry_after}")
+                    logger.warning(f"Rate limited for {retry_after}")
                     await asyncio.sleep(float(retry_after))
 
                 if response.status_code >= 400:
-                    print("Failed to send message:", response.text)
+                    logger.error("Failed to send message:", response.text)
 
                 if response.status_code == 200:
-                    print("Sent message to discord")
+                    logger.info("Sent message to discord")
                 else:
-                    print(response.text)
+                    logger.warning(f"Got unhandled response from discord: {response.text}")
     except Exception as e:
-        print(f"Got an error in send_to_discord: {e[:60]}...")
+        logger.error(f"Got an error in send_to_discord: {e[:60]}...")
 
 
 @asynccontextmanager
@@ -135,16 +147,20 @@ def create_event(data: EventCreateRequest, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(event)
 
+    logger.info(f"Created event with id:{event.id} for {event.url}") 
+
     return {"event_id": event.id, "url": event.url}
 
 
 @app.post("/ingest")
 async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db)):
 
+
     event = db.query(Event).filter(Event.id == payload.event_id).first()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
     
+    logger.info(f"Ingested seating info for {event.id} in section {payload.section}") 
     # Get all current seats for this event
     current_seats = db.execute(
         select(Seat).where(Seat.event_id == payload.event_id)
@@ -206,6 +222,8 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
     db.commit()
 
     if len(new_alerts) <= 4:
+        if len(new_alerts) != 0:
+            logger.info(f"Got {len(new_alerts)} new alerts for event: {event.id} for section {payload.section}")
         for alert in new_alerts:
             message = (
                 f"🎟️ **New Seat Available!**\n"
@@ -216,14 +234,15 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
                 f"**Seat:** {alert.get('seat')}\n"
                 f"**Price:** ${alert.get('price')}"
             )
-            await add_to_msg_buffer(message)
+            asyncio.create_task(add_to_msg_buffer(message))
     else: 
+        logger.info(f"Got more than 4 new alerts for event: {event.id} for section {payload.section}")
         message = (
             f"**Event:** {event.url}\n"
             f"**Time:** {event.time}\n"
             f"Found {len(new_alerts)} seats in section {payload.section}"
             )
-        await add_to_msg_buffer(message)
+        asyncio.create_task(add_to_msg_buffer(message))
 
     return {"message": f"{len(new_alerts)} new available seats ingested"}
 
