@@ -28,7 +28,7 @@ def get_db():
 
 
 DISCORD_WEBHOOK_URL = getenv("DISCORD_WEBHOOK_URL")
-DEBUG = True
+DEBUG = True if getenv("DEBUG", "True") == "True" else False
 BUFFER_INTERVAL = 5 # in seconds
 events_db = {}
 seats_db = {}

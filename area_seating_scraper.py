@@ -214,6 +214,14 @@ class AreaSeatingScraper:
                     await wait_for_window_property(tab, 'rowSeatStatus', timeout=3000)
                 except TimeoutError:
                     # Probably an error page
+                    self.logger.warning(f"Didn't get any seat data {area_number}, {self.base_url}, {tab.url}")
+                    if ERROR_URL in tab.url or ERROR_URL2 in tab.url:
+                        await self.debug_ui.update_status(self.base_url,area_number,f"Flowerror detected when reloading... Quitting page" )
+                        self.logger.warning(f"Flowerror detected when reloading... Quitting page {area_number}, {self.base_url}" )
+                        await self.proxy_manager.close_tab(tab)
+                        self.tabs.pop(area_number)
+                        return
+
                     continue
                 seats = await scrape_section_data(tab, area_number)
                 self.logger.info(f"Extracted data for section {area_number}")
@@ -221,9 +229,9 @@ class AreaSeatingScraper:
                 if isinstance(seats, dict) and 'adjacentSeats' in seats.keys():
                     # event_id will be appended to payload upstream
                     await self.data_callback({"rows":seats['adjacentSeats'], 'section': area_number})
-                    self.logger.info(f"Sent data to backend")
+                    self.logger.info(f"Sent data to backend, {area_number}")
                     await self.debug_ui.update_status(self.base_url,area_number,"Sent data to backend" )
-                else: self.logger.info("Didn't find anything")
+                else: self.logger.info(f"Didn't find anything, {area_number}")
             except TargetClosedError:
                 if self.browser.is_connected():
                     if self.proxy_manager.check_context_status(tab):
@@ -244,7 +252,7 @@ class AreaSeatingScraper:
 
             except Exception as e:
                 self.logger.error(f"Error in tab {area_number}: {e}")
-                await self.debug_ui.update_status(self.base_url,area_number,f"Error in tab {str(e)[:50]}..." )
+                await self.debug_ui.update_status(self.base_url,area_number,f"error in tab {str(e)[:50]}..." )
                 await self.proxy_manager.close_tab(tab)
                 self.tabs.pop(area_number)
                 return
@@ -415,7 +423,7 @@ class AreaSeatingScraper:
             except Exception as e:
                 self.logger.error(f"Error waiting for CAPTCHA resolution: {e}. \n Clearing tab {area_number}..")
                 await self.debug_ui.update_status(self.base_url,area_number,f"Error waiting for CAPTCHA resolution: {e}. \n Clearing tab.." )
-                if ERROR_URL in tab.url:
+                if ERROR_URL in tab.url or ERROR_URL2 in tab.url:
                     self.logger.error(f"URL: {tab.url}")
                 await self.proxy_manager.close_tab(tab)
                 if tab in self.tabs:
