@@ -199,16 +199,6 @@ class AreaSeatingScraper:
             self.logger.info(f"Reloading area {area_number} for updates..")
             await self.debug_ui.update_status(self.base_url,area_number,"Reloading area for updates.." )
             try:
-                async with self.network_sem.priority(TAB_RELOAD_PRIORITY):
-                    try:
-                        await tab.reload()
-                    except TimeoutError:
-                        self.logger.error(f"Got timeout error in reload. Try reducing the concurrency semaphore.\n"
-                                          f"Section: {area_number}, event: {self.base_url}.")
-                        await self.debug_ui.update_status(self.base_url, area_number, f"Got timeout error in reload."
-                                                    f"Try reducing the concurrency semaphore.")
-                        continue # try going for another round
-
 
                 # Check for CAPTCHA on reload
                 if await self.check_for_captcha(tab, area_number):
@@ -233,17 +223,18 @@ class AreaSeatingScraper:
                         return
 
                     elif area_number in self.seats_not_found_counter:
+                        if await tab.locator("text=Error Code: 400").is_visible():
+                            # Some types of events get code 400 when refreshing seating chart page. So we have to respawn
+                            self.logger.error(f"Error 400 in tab {area_number}")
+                            await self.debug_ui.update_status(self.base_url,area_number,f"Error code 400: Respawning" )
+                            await self.proxy_manager.close_tab(tab)
+                            if area_number in self.tabs: self.tabs.pop(area_number)
+                            return
                         if self.seats_not_found_counter[area_number] >= 3:
                             # Didn't find the rowSeatStatus property and not in an ERROR_URL. Should restart page
                             await self.debug_ui.update_status(self.base_url,area_number,f"Didn't find rowSeatStatus property 3 times, restarting" )
                             self.logger.warning(f"Didn't find rowSeatStatus property 3 times, restarting. {area_number}, {self.base_url}" )
 
-                            if await tab.locator("text=Error Code: 400").is_visible():
-                                self.logger.error(f"Error in tab {area_number}: {e}")
-                                await self.debug_ui.update_status(self.base_url,area_number,f"Error code 400: Respawning" )
-                                await self.proxy_manager.close_tab(tab)
-                                if area_number in self.tabs: self.tabs.pop(area_number)
-                                return
 
                             content =await tab.content()
 
@@ -274,6 +265,18 @@ class AreaSeatingScraper:
                     self.logger.info(f"Sent data to backend, {area_number}")
                     await self.debug_ui.update_status(self.base_url,area_number,"Sent data to backend" )
                 else: self.logger.info(f"Didn't find anything, {area_number}")
+
+                # Reloading moved to after data extraction for events that give 400 error on refresh
+                async with self.network_sem.priority(TAB_RELOAD_PRIORITY):
+                    try:
+                        await tab.reload()
+                    except TimeoutError:
+                        self.logger.error(f"Got timeout error in reload. Try reducing the concurrency semaphore.\n"
+                                          f"Section: {area_number}, event: {self.base_url}.")
+                        await self.debug_ui.update_status(self.base_url, area_number, f"Got timeout error in reload."
+                                                    f"Try reducing the concurrency semaphore.")
+                        continue # try going for another round
+
             except TargetClosedError:
                 if self.browser.is_connected():
                     if self.proxy_manager.check_context_status(tab):
@@ -482,7 +485,7 @@ class AreaSeatingScraper:
             finally:
                 self.logger.info("Resuming operations..")
                 await self.debug_ui.update_status(self.base_url,area_number,f"Resuming operations.." )
-        except AssertionError:
+        except TimeoutError:
             self.logger.info(f"Captcha wasn't fully launched. Resuming operations on {area_number}")
             await self.debug_ui.update_status(self.base_url,area_number,f"Captcha wasn't fully launched. Resuming operations" )
 
