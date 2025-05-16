@@ -4,7 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Dict, Callable, Optional
 import logging
-from playwright.async_api import async_playwright, Browser, Playwright
+#from playwright.async_api import async_playwright, Browser, Playwright
+from patchright.async_api import async_playwright, Browser, Playwright
 from EventManager import EventManager
 from debug_ui import DebugUI
 from logger import setup_logger
