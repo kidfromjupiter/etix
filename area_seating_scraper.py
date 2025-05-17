@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import random
 from os import getenv
 import re
@@ -8,15 +9,10 @@ from debug_ui import DebugUI
 from priority_semaphore import PrioritySemaphore
 from proxy_manager import ProxyManager
 
-from datetime import datetime
-
 load_dotenv(override=True)
 
-#from playwright.async_api import Page, TimeoutError, Browser, expect
-#from playwright._impl._errors import TargetClosedError
-from patchright.async_api import Page, TimeoutError, Browser, expect
-from patchright._impl._errors import TargetClosedError
-
+from playwright.async_api import Page, TimeoutError, Browser
+from playwright._impl._errors import TargetClosedError
 
 from capsolver import Capsolver
 from logger import setup_logger
@@ -26,21 +22,18 @@ DEBUG=True if getenv("DEBUG") == "True" else False
 ERROR_URL = "https://etix.com/ticket/online2z/flowError.jsp"
 ERROR_URL2 = "https://www.etix.com/ticket/online2z/flowError.jsp"
 
-
 INITIAL_LOADING_PRIORITY = 9
 TAB_RELOAD_PRIORITY = 11
 MAIN_RELOAD_PRIORITY = 10
 
-async def get_available_area_numbers(page: Page):
-    area_locator = page.locator('//map[@name="EtixOnlineManifestMap"]//area[@status="Available"]')
-    count = await area_locator.count()
-    return [await area_locator.nth(i).get_attribute('name') for i in range(count)]
-
+async def get_available_area_numbers(page):
+    area_elements = await page.query_selector_all('map[name="EtixOnlineManifestMap"] > area[status="Available"]')
+    return [await element.get_attribute('name') for element in area_elements]  # or extract some attribute if available
 
 
 async def scrape_section_data(tab: Page, section: str):
     with open("scripts/ticketDataAdjacentShowManifest.js", "r") as data_scraper_script:
-        seat_data =  await tab.evaluate(data_scraper_script.read(), section , isolated_context=False)
+        seat_data =  await tab.evaluate(data_scraper_script.read(), section )
 
     return seat_data
 
@@ -79,8 +72,8 @@ class AreaSeatingScraper:
         self.section_blacklist = [] # sections that should not be respawned
         self.spawn_target_closed_errors: dict[str, int] ={}
         self.quit_flag = False
-        self.captcha_detect_times: dict[str, datetime] = {}
         self.seats_not_found_counter: dict[str, int] = {}
+
 
     async def spawn_tab(self, area_number):
 
@@ -95,13 +88,13 @@ class AreaSeatingScraper:
                     await self.debug_ui.update_status(self.base_url,area_number,f"Waiting till initial loading complete..." )
                     try:
                         await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: checking for map " )
-                        await expect(new_tab.locator('xpath=//img[@usemap="#EtixOnlineManifestMap"]')).to_be_attached(timeout=3000)
-                    except AssertionError:
+                        await new_tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
+                    except TimeoutError:
                         try:
                             #await new_tab.screenshot(path=f"./no_map/{random.randint(0,1000)}.jpg", full_page=True)
                             await self.debug_ui.update_status(self.base_url,area_number,f"Initial loading: no map, checking for ticket type " )
-                            await expect(new_tab.locator('xpath=//ul[@id="ticket-type"]')).to_be_attached()
-                        except AssertionError as e:
+                            await new_tab.wait_for_selector('ul[id="ticket-type"]')
+                        except TimeoutError as e:
                             self.logger.error(f"Error in spawn_tab for area {area_number}: {e}")
                             await self.debug_ui.update_status(self.base_url,area_number,f"Error in monitor_tab for area {str(e)[:50]}..." )
                             await self.proxy_manager.close_tab(new_tab)
@@ -144,7 +137,6 @@ class AreaSeatingScraper:
                     and area_number not in self.section_blacklist):
                     # probably was closed due to some exception and not in section blacklist. Should restart
                     self.logger.warning(f"Respawning previously closed tab {area_number}")
-                    await self.debug_ui.update_status(self.base_url, 'main', f"Respawning previously closed tabs..")
                     await self.spawn_tab(area_number)
 
             if available_areas != self.prev_available_area_numbers:
@@ -196,22 +188,15 @@ class AreaSeatingScraper:
                 return
             
 
-            self.logger.info(f"Reloading area {area_number} for updates..")
-            await self.debug_ui.update_status(self.base_url,area_number,"Reloading area for updates.." )
             try:
-
                 # Check for CAPTCHA on reload
                 if await self.check_for_captcha(tab, area_number):
                     await self.handle_captcha(tab,area_number)
-
 
                 await asyncio.sleep(0)
                 try:
                     await tab.wait_for_load_state("networkidle")
                     await wait_for_window_property(tab, 'rowSeatStatus', timeout=3000)
-
-                    if area_number in self.seats_not_found_counter:
-                        del self.seats_not_found_counter[area_number] # Got property. reset counter
                 except TimeoutError:
                     # Probably an error page
                     self.logger.warning(f"Didn't get any seat data {area_number}, {self.base_url}, {tab.url}")
@@ -262,11 +247,13 @@ class AreaSeatingScraper:
                 if isinstance(seats, dict) and 'adjacentSeats' in seats.keys():
                     # event_id will be appended to payload upstream
                     asyncio.create_task(self.data_callback({"rows":seats['adjacentSeats'], 'section': area_number}))
-                    self.logger.info(f"Sent data to backend, {area_number}")
+                    self.logger.info(f"Sent data to backend")
                     await self.debug_ui.update_status(self.base_url,area_number,"Sent data to backend" )
-                else: self.logger.info(f"Didn't find anything, {area_number}")
+                else: self.logger.info("Didn't find anything")
 
-                # Reloading moved to after data extraction for events that give 400 error on refresh
+                # Moving reload down here to accomodate events that are error 400 prone
+                self.logger.info(f"Reloading area {area_number} for updates..")
+                await self.debug_ui.update_status(self.base_url,area_number,"Reloading area for updates.." )
                 async with self.network_sem.priority(TAB_RELOAD_PRIORITY):
                     try:
                         await tab.reload()
@@ -276,7 +263,6 @@ class AreaSeatingScraper:
                         await self.debug_ui.update_status(self.base_url, area_number, f"Got timeout error in reload."
                                                     f"Try reducing the concurrency semaphore.")
                         continue # try going for another round
-
             except TargetClosedError:
                 if self.browser.is_connected():
                     if self.proxy_manager.check_context_status(tab):
@@ -297,7 +283,7 @@ class AreaSeatingScraper:
 
             except Exception as e:
                 self.logger.error(f"Error in tab {area_number}: {e}")
-                await self.debug_ui.update_status(self.base_url,area_number,f"error in tab {str(e)[:50]}..." )
+                await self.debug_ui.update_status(self.base_url,area_number,f"Error in tab {str(e)[:50]}..." )
                 await self.proxy_manager.close_tab(tab)
                 if area_number in self.tabs: self.tabs.pop(area_number)
                 return
@@ -305,36 +291,31 @@ class AreaSeatingScraper:
     async def seating_chart_selected(self, tab: Page):
 
         try:
-            await expect(tab.locator('xpath=//img[@usemap="#EtixOnlineManifestMap"]')).to_be_visible(timeout=3000)
+            await tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
         except:
             # Wait for the <ul> element
-            ul = tab.locator('ul#ticket-type')
-            await ul.wait_for()
+            ul = await tab.wait_for_selector('ul#ticket-type')
 
             # Get all <li> children
-            lis = ul.locator('li')
+            lis = await ul.query_selector_all('li')
 
-            lis = await lis.all()
             for li in lis:
                 class_attr = await li.get_attribute('class') or ""
                 # Check if li has the active tab classes
                 if 'ui-state-active' in class_attr and 'ui-tabs-selected' in class_attr:
                     # Check if it contains an <a> with 'Seating Chart'
-                    a = li.locator("a:has-text('Seating Chart')")
-                    await a.wait_for()
-
+                    a = await li.query_selector("a:has-text('Seating Chart')")
                     if a:
                         # Already on the correct tab
                         break
                     else:
                         # Not the Seating Chart tab, find and click the correct one
                         for other_li in lis:
-                            a = other_li.locator("a:has-text('Seating Chart')")
-                            await a.wait_for()
+                            a = await other_li.query_selector("a:has-text('Seating Chart')")
                             if a:
                                 async with self.network_sem.priority(INITIAL_LOADING_PRIORITY):
                                     await a.click()
-                                    await expect(tab.locator('xpath=//img[@usemap="#EtixOnlineManifestMap"]') ).to_be_visible(timeout=3000)
+                                    await tab.wait_for_selector('img[usemap="#EtixOnlineManifestMap"]', timeout=3000) 
                                     #await tab.wait_for_load_state('networkidle')
                                 break
                     break
@@ -346,9 +327,10 @@ class AreaSeatingScraper:
             # Some pages don't load the manifest automatically. You need to navigate to it
             await self.seating_chart_selected(tab)
 
+
             async with self.network_sem.priority(INITIAL_LOADING_PRIORITY):
                 await wait_for_function(tab, "isGASection")
-                if await tab.evaluate(f"isGASection('{area_number}')", isolated_context=False):
+                if await tab.evaluate(f"isGASection('{area_number}')"):
                     #this is a general admission section
                     self.logger.info("This is a ga section. Adding to section blacklist...")
                     await self.debug_ui.update_status(self.base_url,area_number,f"GA section. Adding to section blacklist" )
@@ -361,7 +343,7 @@ class AreaSeatingScraper:
                     await wait_for_function(tab, 'chooseSection')
 
 
-                    await tab.evaluate(f"chooseSection('{area_number}')", isolated_context= False)
+                    await tab.evaluate(f"chooseSection('{area_number}')")
 
                     await self.debug_ui.update_status(self.base_url,area_number,f"Chosen section" )
                     self.logger.info(f"Chosen section {area_number}")
@@ -374,7 +356,7 @@ class AreaSeatingScraper:
 
             await self.debug_ui.update_status(self.base_url,area_number,f"Waiting till loading manifest" )
 
-            await expect(tab.locator("xpath=//div[@id='seatingChart']")).to_be_visible()
+            await tab.wait_for_selector("div[id='seatingChart']")
 
             await self.debug_ui.update_status(self.base_url,area_number,f"Manifest loaded" )
             self.logger.info("Selection complete")
@@ -406,13 +388,8 @@ class AreaSeatingScraper:
                 if area_number in self.tabs: self.tabs.pop(area_number)
                 return
         except Exception as e:
-            self.logger.error(f"Error in navigate_to_seating_manifest for area {area_number}: {e}")
-            content =await tab.content()
-            match = re.search(r'/([\d]+)/', self.base_url)
-            with open(f"./fails/{match.group(1)}_{area_number}.html", 'w') as file:
-                file.write(content)
-            await tab.screenshot(path=f"./fails/{area_number}.jpg", full_page=True)
-            await self.debug_ui.update_status(self.base_url,area_number,f"Error in navigate_to_seating_manifest for area {str(e)[:50]}..." )
+            self.logger.error(f"Error in monitor_tab for area {area_number}: {e}")
+            await self.debug_ui.update_status(self.base_url,area_number,f"Error in monitor_tab for area {str(e)[:50]}..." )
             await self.proxy_manager.close_tab(tab)
             if tab in self.tabs.values():
                 self.tabs.pop(area_number)
@@ -444,13 +421,11 @@ class AreaSeatingScraper:
                             timeout=120
                         )
                         if solution:
-                            time_since_detection = (datetime.now() - self.captcha_detect_times[area_number]).seconds
-                            self.logger.info(f"area {area_number}, Time to solve since captcha detection: {time_since_detection}s")
                             # automatically finding the recaptcha callback and calling it
                             with open("scripts/getRecaptchaCallback.js") as callback_finder:
-                                results = await tab.evaluate(callback_finder.read(), isolated_context=False)
+                                results = await tab.evaluate(callback_finder.read())
                                 await tab.evaluate(
-                                    f"solution => {results[0]['callback']}(solution)", solution, isolated_context=False)
+                                    f"solution => {results[0]['callback']}(solution)", solution)
 
                             self.logger.info(f"Solved captcha!")
                             await self.debug_ui.update_status(self.base_url,area_number,f"Solved captcha!" )
@@ -470,7 +445,7 @@ class AreaSeatingScraper:
 
                 
                 # waiting for seating chart to appear
-                await expect(tab.locator("xpath=//div[@id='seatingChart']")).to_be_visible()
+                await tab.wait_for_selector('div#seatingChart')
 
                 self.logger.info("CAPTCHA appears to be resolved")
                 await self.debug_ui.update_status(self.base_url,area_number,f"CAPTCHA appears to be resolved" )
@@ -495,16 +470,17 @@ class AreaSeatingScraper:
         self.logger.info(f"Checking for captcha in {area_number}")
         await self.debug_ui.update_status(self.base_url,area_number,f"Checking for captcha" )
         try:
-            element = page.locator('iframe[src*="recaptcha.net"]').first
-            await element.wait_for(state="attached", timeout=5000)
-            #element = await page.wait_for_selector('iframe[src*="recaptcha.net"]',timeout=5000, state="attached")
+            element = await page.wait_for_selector('iframe[src*="recaptcha.net"]',timeout=5000, state="attached")
             if element:
                 self.logger.info(f"Found captcha in {area_number}")
                 await self.debug_ui.update_status(self.base_url,area_number,f"Found captcha" )
-                self.captcha_detect_times[area_number] = datetime.now()
                 return True
+            else:
+                self.logger.info(f"No captcha found in area {area_number}")
+                await self.debug_ui.update_status(self.base_url,area_number,f"No captcha found" )
+            return False
         except TimeoutError:
-            self.logger.info(f"Recaptcha check timed out. Seems to be no captcha, {area_number}")
+            self.logger.info("Recaptcha check timed out. Seems to be no captcha")
             await self.debug_ui.update_status(self.base_url,area_number,f"Recaptcha check timed out. Seems to be no captcha" )
             return False
         except TargetClosedError:

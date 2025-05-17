@@ -1,21 +1,17 @@
 import asyncio
-from os import getenv
 import re
 from dataclasses import dataclass
 from typing import List, Dict, Callable, Optional
 import logging
-#from playwright.async_api import async_playwright, Browser, Playwright
-from patchright.async_api import async_playwright, Browser, Playwright
+from playwright.async_api import async_playwright, Browser, Playwright
 from EventManager import EventManager
 from debug_ui import DebugUI
 from logger import setup_logger
 from priority_semaphore import PrioritySemaphore
 from proxy_manager import ProxyManager
-from dotenv import load_dotenv
 
-load_dotenv(override=True)
+
 HEADLESS_MODE = True
-CONCURRENCY = int(getenv("CONCURRENCY",8))
 @dataclass
 class BrowserInstance:
     playwright_instance: Playwright
@@ -33,7 +29,7 @@ class BrowserManager:
         self.all_event_urls: List[str] = []
         self.all_proxies: List[str] = []
         self.logger = setup_logger("BrowserManager", logfile='./logs/browser_manager.log')
-        self.network_sem = PrioritySemaphore(CONCURRENCY)
+        self.network_sem = PrioritySemaphore(8)
         self.debug_ui = DebugUI()
         self.loading_lock = asyncio.Semaphore(1)
         self.num_browsers: int = 0 

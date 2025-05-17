@@ -46,8 +46,7 @@ class EventManager:
 
     async def look_for_map(self, page: Page):
         self.logger.info("Image with usemap not found. Looking for seating chart button")
-        button = page.locator("a:has-text('Seating Chart')")
-        await button.wait_for()
+        button = await page.wait_for_selector("a:has-text('Seating Chart')")
         self.logger.info("Seating chart button found")
         async with page.expect_navigation() as _:
             await button.click()
@@ -71,8 +70,7 @@ class EventManager:
 
     async def get_event_time(self, page: Page):
         try:
-            time_div = page.locator("div[class='time']")
-            await time_div.wait_for()
+            time_div = await page.wait_for_selector("div[class='time']")
             time_string = await time_div.inner_text()
             matches = re.search(r'\b[A-Z][a-z]+ \d+, \d+ \d+:\d+ [A|P]M',time_string)
             if matches:
