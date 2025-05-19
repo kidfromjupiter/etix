@@ -6,8 +6,8 @@ from typing import Dict, List, Optional, Set, Tuple
 import httpx
 from playwright.async_api import Browser, BrowserContext, Page, Response
 
-from debug_ui import DebugUI
-import logger
+from utils.debug_ui import DebugUI
+import utils.logger as logger
 from dotenv import load_dotenv
 
 load_dotenv(override=True)

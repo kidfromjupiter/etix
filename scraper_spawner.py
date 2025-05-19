@@ -1,7 +1,7 @@
 import asyncio
 import os
 import shutil
-from browser_manager import BrowserManager
+from scraper.managers.browser_manager import BrowserManager
 from dotenv import load_dotenv
 
 

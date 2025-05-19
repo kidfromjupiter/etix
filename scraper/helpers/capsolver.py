@@ -3,7 +3,7 @@ import aiohttp
 import json
 from typing import Dict, Optional
 
-from logger import setup_logger
+from utils.logger import setup_logger
 
 class Capsolver:
     """

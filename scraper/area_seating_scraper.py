@@ -1,21 +1,27 @@
 import asyncio
 import datetime
+import os
 import random
 from os import getenv
 import re
 from dotenv import load_dotenv
 
-from debug_ui import DebugUI
-from priority_semaphore import PrioritySemaphore
-from proxy_manager import ProxyManager
+from utils.debug_ui import DebugUI
+from utils.priority_semaphore import PrioritySemaphore
+from scraper.managers.proxy_manager import ProxyManager
 
 load_dotenv(override=True)
 
 from playwright.async_api import Page, TimeoutError, Browser
 from playwright._impl._errors import TargetClosedError
 
-from capsolver import Capsolver
-from logger import setup_logger
+from scraper.helpers.capsolver import Capsolver
+from utils.logger import setup_logger
+
+script_dir = os.path.dirname(__file__)
+ticket_data_adjacent_path = os.path.join(script_dir, "helpers/scripts/ticketDataAdjacentShowManifest.js")
+get_recaptcha_callback_path = os.path.join(script_dir,"helpers/scripts/getRecaptchaCallback.js")
+
 
 DEBUG=True if getenv("DEBUG") == "True" else False
 
@@ -32,7 +38,7 @@ async def get_available_area_numbers(page):
 
 
 async def scrape_section_data(tab: Page, section: str):
-    with open("scripts/ticketDataAdjacentShowManifest.js", "r") as data_scraper_script:
+    with open(ticket_data_adjacent_path, "r") as data_scraper_script:
         seat_data =  await tab.evaluate(data_scraper_script.read(), section )
 
     return seat_data
@@ -73,7 +79,12 @@ class AreaSeatingScraper:
         self.spawn_target_closed_errors: dict[str, int] ={}
         self.quit_flag = False
         self.seats_not_found_counter: dict[str, int] = {}
+        self.respawning_areas: list[str] = []
 
+    async def respawn_tab(self, area_number):
+        self.respawning_areas.append(area_number)
+        await self.spawn_tab(area_number)
+        self.respawning_areas.remove(area_number)
 
     async def spawn_tab(self, area_number):
 
@@ -134,10 +145,12 @@ class AreaSeatingScraper:
 
             for area_number in available_areas:
                 if (area_number not in self.tabs.keys() and self.initial_spawning_complete 
-                    and area_number not in self.section_blacklist):
-                    # probably was closed due to some exception and not in section blacklist. Should restart
+                    and area_number not in self.section_blacklist and area_number not in self.respawning_areas):
+                    # probably was closed due to some exception and not in section blacklist and not currently being restarted.
+                    # Should restart
                     self.logger.warning(f"Respawning previously closed tab {area_number}")
-                    await self.spawn_tab(area_number)
+                    asyncio.create_task(self.respawn_tab(area_number))
+                    #await self.spawn_tab(area_number)
 
             if available_areas != self.prev_available_area_numbers:
                 self.logger.info(f"{len(available_areas)} available sections found.")
@@ -422,7 +435,7 @@ class AreaSeatingScraper:
                         )
                         if solution:
                             # automatically finding the recaptcha callback and calling it
-                            with open("scripts/getRecaptchaCallback.js") as callback_finder:
+                            with open(get_recaptcha_callback_path) as callback_finder:
                                 results = await tab.evaluate(callback_finder.read())
                                 await tab.evaluate(
                                     f"solution => {results[0]['callback']}(solution)", solution)

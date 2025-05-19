@@ -4,9 +4,9 @@ import re
 from os import getenv
 import random
 
-from area_seating_scraper import AreaSeatingScraper
-from debug_ui import DebugUI
-from logger import setup_logger
+from scraper.area_seating_scraper import AreaSeatingScraper
+from utils.debug_ui import DebugUI
+from utils.logger import setup_logger
 import httpx
 from playwright.async_api import  Page, Request, Browser
 import aiohttp
@@ -16,8 +16,8 @@ from playwright._impl._errors import TargetClosedError
 
 load_dotenv(override=True)
 
-from priority_semaphore import PrioritySemaphore
-from proxy_manager import ProxyManager
+from utils.priority_semaphore import PrioritySemaphore
+from scraper.managers.proxy_manager import ProxyManager
 
 EVENT_URL = "https://www.etix.com/ticket/p/61485410/ludacris-with-special-guestsbow-wow-bone-thugsnharmony-albuquerque-sandia-casino-amphitheater"
 HEADLESS_MODE = True

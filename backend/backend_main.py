@@ -10,12 +10,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
 
 #from backend import crud
-from backend.models import Event, Seat, RawEventData
-from backend.schema import SeatingPayload, EventCreateRequest, EventResponse
-from backend.db import SessionLocal, init_db
+from backend.utils.models import Event, Seat, RawEventData
+from backend.utils.schema import SeatingPayload, EventCreateRequest, EventResponse
+from backend.utils.db import SessionLocal, init_db
 import httpx
 from os import getenv
-from logger import setup_logger
+from utils.logger import setup_logger
 
 from dotenv import load_dotenv
 
@@ -249,4 +249,5 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
 
 
 if __name__ == "__main__":
-    uvicorn.run("backend_main:app", host="127.0.0.1", port=4000, reload=False)
+    import uvicorn
+    uvicorn.run("backend.backend_main:app", host="127.0.0.1", port=4000, reload=False)

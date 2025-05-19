@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from typing import List, Dict, Callable, Optional
 import logging
 from playwright.async_api import async_playwright, Browser, Playwright
-from EventManager import EventManager
-from debug_ui import DebugUI
-from logger import setup_logger
-from priority_semaphore import PrioritySemaphore
-from proxy_manager import ProxyManager
+from scraper.managers.event_manager import EventManager
+from utils.debug_ui import DebugUI
+from utils.logger import setup_logger
+from utils.priority_semaphore import PrioritySemaphore
+from scraper.managers.proxy_manager import ProxyManager
 
 
 HEADLESS_MODE = True
