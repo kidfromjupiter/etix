@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import select, delete
 
 #from backend import crud
+from backend.utils.embed_builder import EmbedBuilder
 from backend.utils.models import Event, Seat, RawEventData
 from backend.utils.schema import SeatingPayload, EventCreateRequest, EventResponse
 from backend.utils.db import SessionLocal, init_db
@@ -56,13 +57,13 @@ async def flush_buffer():
         for webhook_url in list(buffers.keys()):
             async with buffer_locks[webhook_url]:
                 if buffers[webhook_url]:
-                    combined_message = "\n\n".join(buffers[webhook_url])
-                    buffers[webhook_url] = []
-                    logger.info(f"Sending message to {webhook_url}: \n{combined_message}")
+                    combined_embeds = buffers[webhook_url][:10]
+                    buffers[webhook_url] = buffers[webhook_url][10:]
+                    logger.info(f"Sending message to {webhook_url}: \n{combined_embeds}")
                     if not DEBUG:
-                        asyncio.create_task(send_to_discord(combined_message, webhook_url))
+                        asyncio.create_task(send_to_discord(combined_embeds, webhook_url))
                     else:
-                        print(f"Buffered Message for {webhook_url}:\n", combined_message)
+                        print(f"Buffered Message for {webhook_url}:\n", combined_embeds)
 
 async def add_to_msg_buffer(message, webhook_url):
      # Start flusher if not already started
@@ -247,29 +248,18 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
         )
 
     db.commit()
+    embed_builder = EmbedBuilder()
 
     if len(new_alerts) <= 4:
         if len(new_alerts) != 0:
             logger.info(f"Got {len(new_alerts)} new alerts for event: {event.id} for section {payload.section}")
         for alert in new_alerts:
-            message = (
-                f"🎟️ **New Seat Available!**\n"
-                f"**Event:** {alert.get('eventUrl')}\n"
-                f"**Time:** {alert.get('eventTime')}\n"
-                f"**Section:** {alert.get('section')}\n"
-                f"**Row:** {alert.get('row')}\n"
-                f"**Seat:** {alert.get('seat')}\n"
-                f"**Price:** ${alert.get('price')}"
-            )
-            asyncio.create_task(add_to_msg_buffer(message, event.webhook_url))
+            embed = embed_builder.build_detailed_seat_embed(alert)
+            asyncio.create_task(add_to_msg_buffer(embed, event.webhook_url))
     else: 
         logger.info(f"Got more than 4 new alerts for event: {event.id} for section {payload.section}")
-        message = (
-            f"**Event:** {event.url}\n"
-            f"**Time:** {event.time}\n"
-            f"Found {len(new_alerts)} seats in section {payload.section}"
-            )
-        asyncio.create_task(add_to_msg_buffer(message, event.webhook_url))
+        embed = embed_builder.build_summary_embed(event.url, event.time, len(new_alerts), payload.section)
+        asyncio.create_task(add_to_msg_buffer(embed, event.webhook_url))
 
     return {"message": f"{len(new_alerts)} new available seats ingested"}
 
