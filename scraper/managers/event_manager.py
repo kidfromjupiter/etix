@@ -23,10 +23,11 @@ EVENT_URL = "https://www.etix.com/ticket/p/61485410/ludacris-with-special-guests
 HEADLESS_MODE = True
 
 class EventManager:
-    def __init__(self, base_url,browser,  proxy_manager, debug_ui, network_sem, initial_load_complete_callback):
+    def __init__(self, base_url, webhook_url, browser,  proxy_manager, debug_ui, network_sem, initial_load_complete_callback):
         self.playwright = None
         self.base_url = base_url
         self.browser: Browser = browser
+        self.webhook_url = webhook_url
         self.network_sem: PrioritySemaphore = network_sem
         self.context = None
         self.page = None
@@ -121,7 +122,7 @@ class EventManager:
     async def create_event(self, time):
         async with aiohttp.ClientSession() as session:
             async with session.post(f"{getenv('BACKEND_BASEURL', 'http://localhost:4000')}/create-event",
-                                    json={"url": self.base_url, "time": time}) as response:
+                                    json={"url": self.base_url, "time": time, 'webhook_url': self.webhook_url}) as response:
                 if response.status != 200:
                     self.logger.warning(f"Creating event failed for url {self.base_url}")
                 else:

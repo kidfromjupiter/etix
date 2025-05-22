@@ -18,7 +18,7 @@ class BrowserInstance:
     browser: Browser
     proxy_manager: ProxyManager
     tasks: List[asyncio.Task]
-    event_urls: List[str]
+    event_urls: dict[str, str]
     proxies: List[str]
 
 class BrowserManager:
@@ -26,7 +26,7 @@ class BrowserManager:
         self.max_browsers = max_browsers
         self.events_per_browser = events_per_browser
         self.active_browsers: List[BrowserInstance] = []
-        self.all_event_urls: List[str] = []
+        self.all_events: dict[str, str] = {}
         self.all_proxies: List[str] = []
         self.logger = setup_logger("BrowserManager", logfile='./logs/browser_manager.log')
         self.network_sem = PrioritySemaphore(8)
@@ -45,7 +45,7 @@ class BrowserManager:
         # Calculate how many browsers we actually need
         num_browsers = min(
             self.max_browsers,
-            len(self.all_event_urls) // (self.events_per_browser or 1) + 1
+            len(self.all_events.keys()) // (self.events_per_browser or 1) + 1
         )
         self.num_browsers = num_browsers
         
@@ -69,7 +69,10 @@ class BrowserManager:
     
     async def _load_event_urls(self):
         with open("event_list") as event_list:
-            self.all_event_urls = [url.strip() for url in event_list if url.strip()]
+            for line in event_list:
+                event, webhook_url = line.strip().split("@")
+                if webhook_url:
+                    self.all_events[event] = webhook_url
     
     async def _spawn_browser(self) -> BrowserInstance:
         if len(self.active_browsers) >= self.max_browsers:
@@ -117,12 +120,12 @@ class BrowserManager:
             await self._dispatch_events_to_browser(new_browser, event_urls, proxies)
         self.logger.info(f"Browser respawned with events {event_urls}")
     
-    async def _dispatch_events_to_browser(self, browser_instance: BrowserInstance, event_urls: list[str] = [], proxies: List[str] = []):
-        if not self.all_event_urls and not event_urls:
+    async def _dispatch_events_to_browser(self, browser_instance: BrowserInstance, event_urls: dict[str, str] = {}, proxies: List[str] = []):
+        if not self.all_events.keys() and not event_urls:
             return
             
-        if event_urls: # this is a respawn. Just respawn all the event_urls in the prev browser
-            browser_instance.event_urls.extend(event_urls)
+        if event_urls: # this is a respawn. Just respawn all the event_urls in the browser
+            browser_instance.event_urls = event_urls
             browser_instance.proxies.extend(proxies)
             browser_instance.proxy_manager = ProxyManager(browser_instance.browser,self.debug_ui, proxies) 
             for event_url in event_urls:
@@ -139,20 +142,20 @@ class BrowserManager:
         # Calculate how many events to assign to this browser
         if self.events_per_browser is None:
             # Distribute events evenly across all browsers
-            events_per_browser = len(self.all_event_urls) // self.num_browsers + 1
+            events_per_browser = len(self.all_events.keys()) // self.num_browsers + 1
         else:
             events_per_browser = self.events_per_browser
 
         # Calculate how many proxies to assign to this browser
         proxies_per_browser = len(self.all_proxies) // self.num_browsers + 1
             
-        events_to_dispatch = self.all_event_urls[:events_per_browser]
-        self.all_event_urls = self.all_event_urls[events_per_browser:]
+        events_to_dispatch = dict(list(self.all_events.items())[:events_per_browser])
+        self.all_event_urls = dict(list(self.all_events.items())[events_per_browser:])
 
         proxies_to_dispatch = self.all_proxies[:proxies_per_browser]
         self.all_proxies = self.all_proxies[proxies_per_browser:]
 
-        browser_instance.event_urls.extend(events_to_dispatch)
+        browser_instance.event_urls = events_to_dispatch
         browser_instance.proxies.extend(proxies_to_dispatch)
 
         browser_instance.proxy_manager = ProxyManager(browser_instance.browser, self.debug_ui, proxies_to_dispatch) 
@@ -161,13 +164,15 @@ class BrowserManager:
                 browser_instance.browser,
                 event_url, 
                 browser_instance.proxy_manager,
+                events_to_dispatch[event_url],
                 lambda url=event_url: self.logger.info(f"Initial loading complete! {url}")
             ))
             browser_instance.tasks.append(task)
     
-    async def _run_event_manager(self,browser:Browser, event_url: str, proxy_manager: ProxyManager, callback: Callable):
+    async def _run_event_manager(self,browser:Browser, event_url: str, proxy_manager: ProxyManager,webhook_url, callback: Callable):
         manager = EventManager(
             event_url,
+            webhook_url,
             browser,
             proxy_manager,
             self.debug_ui,

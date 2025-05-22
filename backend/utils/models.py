@@ -11,6 +11,7 @@ class Event(Base):
     id = Column(String, primary_key=True)
     url = Column(String, nullable=False)
     time = Column(String, nullable=True)
+    webhook_url = Column(String, nullable=False)
 
 class Seat(Base):
     __tablename__ = "seats"

@@ -1,4 +1,5 @@
 import asyncio
+from collections import defaultdict
 from contextlib import asynccontextmanager
 import os
 import time
@@ -37,7 +38,6 @@ def get_db():
         db.close()
 
 
-DISCORD_WEBHOOK_URL = getenv("DISCORD_WEBHOOK_URL")
 DEBUG = True if getenv("DEBUG", "True") == "True" else False
 BUFFER_INTERVAL = 5 # in seconds
 events_db = {}
@@ -45,35 +45,61 @@ seats_db = {}
 
 
 last_reset_time = 0
-buffer = []
-buffer_lock = asyncio.Lock()
+
+buffers = defaultdict(list)          # Map webhook_url -> list of messages
+buffer_locks = defaultdict(asyncio.Lock)  # Map webhook_url -> individual lock
+flush_tasks = {}
+
+async def flush_buffer():
+    while True:
+        await asyncio.sleep(BUFFER_INTERVAL)
+        for webhook_url in list(buffers.keys()):
+            async with buffer_locks[webhook_url]:
+                if buffers[webhook_url]:
+                    combined_message = "\n\n".join(buffers[webhook_url])
+                    buffers[webhook_url] = []
+                    logger.info(f"Sending message to {webhook_url}: \n{combined_message}")
+                    if not DEBUG:
+                        asyncio.create_task(send_to_discord(combined_message, webhook_url))
+                    else:
+                        print(f"Buffered Message for {webhook_url}:\n", combined_message)
+
+async def add_to_msg_buffer(message, webhook_url):
+     # Start flusher if not already started
+    if webhook_url not in flush_tasks:
+        flush_tasks[webhook_url] = asyncio.create_task(flush_buffer(webhook_url))
+
+    async with buffer_locks[webhook_url]:
+        buffers[webhook_url].append(message)
+
 last_reset_time = 0
 remaining_requests = 5
 lock = asyncio.Lock()
 
-logger.info(f"Discord webhook url: {DISCORD_WEBHOOK_URL}")
 logger.info(f"Debug enabled: {DEBUG}")
 
-async def flush_buffer():
-    global buffer
+async def flush_buffer(webhook_url):
     while True:
         await asyncio.sleep(BUFFER_INTERVAL)
-        async with buffer_lock:
-            if buffer:
-                combined_message = "\n\n".join(buffer)
-                buffer = []
-                logger.info(f"Sending message: \n{combined_message}")
+        async with buffer_locks[webhook_url]:
+            if buffers[webhook_url]:
+                combined_message = "\n\n".join(buffers[webhook_url])
+                buffers[webhook_url] = []
+                logger.info(f"Sending message to {webhook_url}: \n{combined_message}")
                 if not DEBUG:
-                    asyncio.create_task(send_to_discord(combined_message))
+                    asyncio.create_task(send_to_discord(combined_message, webhook_url))
                 else:
-                    print("Buffered Message:\n", combined_message)
+                    print(f"Buffered Message for {webhook_url}:\n", combined_message)
 
-async def add_to_msg_buffer(message):
-    async with buffer_lock:
-        buffer.append(message)
+async def add_to_msg_buffer(message, webhook_url):
+    # Start flusher if not already started
+    if webhook_url not in flush_tasks:
+        flush_tasks[webhook_url] = asyncio.create_task(flush_buffer(webhook_url))
 
+    async with buffer_locks[webhook_url]:
+        buffers[webhook_url].append(message)
 
-async def send_to_discord( message):
+async def send_to_discord( message, webhook_url):
     global last_reset_time, remaining_requests
 
     try:
@@ -84,7 +110,7 @@ async def send_to_discord( message):
                 await asyncio.sleep(sleep_for)
 
             async with httpx.AsyncClient() as client:
-                response = await client.post(DISCORD_WEBHOOK_URL, json={"content": message})
+                response = await client.post(webhook_url, json={"content": message})
 
                 # Parse rate limit headers
                 remaining = response.headers.get("X-RateLimit-Remaining")
@@ -116,14 +142,15 @@ async def send_to_discord( message):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    flush_task = asyncio.create_task(flush_buffer())
+    #flush_task = asyncio.create_task(flush_buffer())
 
     yield  # Let the app run
 
     # Shutdown
-    flush_task.cancel()
+    #flush_task.cancel()
     try:
-        await flush_task
+        #await flush_task
+        pass
     except asyncio.CancelledError:
         pass
 
@@ -142,7 +169,7 @@ def create_event(data: EventCreateRequest, db: Session = Depends(get_db)):
     event = db.query(Event).filter_by(id=event_id).first()
 
     if not event:
-        event = Event(id=event_id, url=data.url, time=data.time)
+        event = Event(id=event_id, url=data.url, time=data.time, webhook_url = data.webhook_url)
         db.add(event)
         db.commit()
         db.refresh(event)
@@ -234,7 +261,7 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
                 f"**Seat:** {alert.get('seat')}\n"
                 f"**Price:** ${alert.get('price')}"
             )
-            asyncio.create_task(add_to_msg_buffer(message))
+            asyncio.create_task(add_to_msg_buffer(message, event.webhook_url))
     else: 
         logger.info(f"Got more than 4 new alerts for event: {event.id} for section {payload.section}")
         message = (
@@ -242,7 +269,7 @@ async def ingest_seating(payload: SeatingPayload, db: Session = Depends(get_db))
             f"**Time:** {event.time}\n"
             f"Found {len(new_alerts)} seats in section {payload.section}"
             )
-        asyncio.create_task(add_to_msg_buffer(message))
+        asyncio.create_task(add_to_msg_buffer(message, event.webhook_url))
 
     return {"message": f"{len(new_alerts)} new available seats ingested"}
 

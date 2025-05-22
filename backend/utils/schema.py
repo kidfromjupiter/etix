@@ -35,6 +35,7 @@ class SeatingPayload(BaseModel):
 class EventCreateRequest(BaseModel):
     url: str
     time: str
+    webhook_url: str
 
 class EventResponse(BaseModel):
     event_id: str

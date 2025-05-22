@@ -12,10 +12,15 @@ HEADLESS_MODE = True
 async def main():
 
     # Housekeeping
-    for dirname in ["logs", "fails"]:
+    for dirname in ["logs/browser_manager.log", "logs/logfile.log", ]:
         if os.path.exists(dirname):
-            shutil.rmtree(dirname)
-        os.makedirs(dirname)
+            os.remove(dirname)
+        else:
+            os.makedirs(dirname)
+    
+    if os.path.exists("fails"):
+        shutil.rmtree("fails")
+        os.makedirs("fails")
 
 
     manager = BrowserManager(max_browsers=1, events_per_browser=50)

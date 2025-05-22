@@ -340,3 +340,5 @@ class ProxyManager:
     def check_context_status(self, tab: Page):
         ctx = self._get_context_for_page(tab)
         return False if ctx == None else True 
+
+#    def check_for_empty_pages(self):
