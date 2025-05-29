@@ -15,8 +15,6 @@ async def main():
     for dirname in ["logs/browser_manager.log", "logs/logfile.log", ]:
         if os.path.exists(dirname):
             os.remove(dirname)
-        else:
-            os.makedirs(dirname)
     
     if os.path.exists("fails"):
         shutil.rmtree("fails")

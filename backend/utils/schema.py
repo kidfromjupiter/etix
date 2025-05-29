@@ -20,7 +20,7 @@ class Seat(BaseModel):
     holdComment: str
     priceLevelId: str
     price: str
-    priceNum: str
+    priceNum: str | float
     priceCode: dict
 
 class Row(BaseModel):

@@ -1,3 +1,6 @@
+from datetime import datetime
+
+
 class EmbedBuilder:
     def __init__(self):
         pass
@@ -7,7 +10,7 @@ class EmbedBuilder:
             "title": "🎟️ New Seat Available!",
             "fields": [
                 {"name": "Event", "value": alert.get('eventUrl')},
-                {"name": "Time", "value": alert.get('eventTime')},
+                {"name": "Time", "value": datetime.fromisoformat(alert.get('eventTime')).strftime('%A, %B %d, %Y at %I:%M %p')},
                 {"name": "Section", "value": alert.get('section')},
                 {"name": "Row", "value": alert.get('row')},
                 {"name": "Seat", "value": alert.get('seat')},
@@ -18,16 +21,14 @@ class EmbedBuilder:
         return embed
 
     def build_summary_embed(self, url, time, no_of_seats, section):
-        summary_message = (
-            f"Found {no_of_seats} seats in section {section}"
-        )
         embed = {
             "title": "🎟️ Seat Summary Update",
-            "description": summary_message,
             "fields":[
                 {"name": "Event", "value": url},
-                {"name": "Time", "value": time},
+                {"name": "Time", "value": datetime.fromisoformat(time).strftime('%A, %B %d, %Y at %I:%M %p')},
+                {"name": "Section", "value": section},
+                {"name": "Seats", "value": no_of_seats},
             ],
-            "color": 5814783
+            "color": 16711680
         }
         return embed

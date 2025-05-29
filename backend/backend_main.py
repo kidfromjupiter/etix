@@ -50,29 +50,6 @@ last_reset_time = 0
 buffers = defaultdict(list)          # Map webhook_url -> list of messages
 buffer_locks = defaultdict(asyncio.Lock)  # Map webhook_url -> individual lock
 flush_tasks = {}
-
-async def flush_buffer():
-    while True:
-        await asyncio.sleep(BUFFER_INTERVAL)
-        for webhook_url in list(buffers.keys()):
-            async with buffer_locks[webhook_url]:
-                if buffers[webhook_url]:
-                    combined_embeds = buffers[webhook_url][:10]
-                    buffers[webhook_url] = buffers[webhook_url][10:]
-                    logger.info(f"Sending message to {webhook_url}: \n{combined_embeds}")
-                    if not DEBUG:
-                        asyncio.create_task(send_to_discord(combined_embeds, webhook_url))
-                    else:
-                        print(f"Buffered Message for {webhook_url}:\n", combined_embeds)
-
-async def add_to_msg_buffer(message, webhook_url):
-     # Start flusher if not already started
-    if webhook_url not in flush_tasks:
-        flush_tasks[webhook_url] = asyncio.create_task(flush_buffer(webhook_url))
-
-    async with buffer_locks[webhook_url]:
-        buffers[webhook_url].append(message)
-
 last_reset_time = 0
 remaining_requests = 5
 lock = asyncio.Lock()
@@ -84,8 +61,8 @@ async def flush_buffer(webhook_url):
         await asyncio.sleep(BUFFER_INTERVAL)
         async with buffer_locks[webhook_url]:
             if buffers[webhook_url]:
-                combined_message = "\n\n".join(buffers[webhook_url])
-                buffers[webhook_url] = []
+                combined_message = buffers[webhook_url][:10]
+                buffers[webhook_url] = buffers[webhook_url][10:]
                 logger.info(f"Sending message to {webhook_url}: \n{combined_message}")
                 if not DEBUG:
                     asyncio.create_task(send_to_discord(combined_message, webhook_url))
@@ -95,12 +72,14 @@ async def flush_buffer(webhook_url):
 async def add_to_msg_buffer(message, webhook_url):
     # Start flusher if not already started
     if webhook_url not in flush_tasks:
+        logger.info(f"Started flush buffer for {webhook_url}")
         flush_tasks[webhook_url] = asyncio.create_task(flush_buffer(webhook_url))
 
     async with buffer_locks[webhook_url]:
+        logger.info(f"Added msg to buffer for {webhook_url}")
         buffers[webhook_url].append(message)
 
-async def send_to_discord( message, webhook_url):
+async def send_to_discord( embeds, webhook_url):
     global last_reset_time, remaining_requests
 
     try:
@@ -111,7 +90,7 @@ async def send_to_discord( message, webhook_url):
                 await asyncio.sleep(sleep_for)
 
             async with httpx.AsyncClient() as client:
-                response = await client.post(webhook_url, json={"content": message})
+                response = await client.post(webhook_url, json={"embeds": embeds})
 
                 # Parse rate limit headers
                 remaining = response.headers.get("X-RateLimit-Remaining")
@@ -139,23 +118,7 @@ async def send_to_discord( message, webhook_url):
     except Exception as e:
         logger.error(f"Got an error in send_to_discord: {e[:60]}...")
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    #flush_task = asyncio.create_task(flush_buffer())
-
-    yield  # Let the app run
-
-    # Shutdown
-    #flush_task.cancel()
-    try:
-        #await flush_task
-        pass
-    except asyncio.CancelledError:
-        pass
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 init_db()
 
 @app.post("/create-event", response_model=EventResponse)

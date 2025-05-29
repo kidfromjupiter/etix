@@ -115,7 +115,7 @@ class EventManager:
         async with aiohttp.ClientSession() as session:
             async with session.post(f"{getenv('BACKEND_BASEURL', 'http://localhost:4000')}/ingest", json={**data, "event_id": self.event_id}) as response:
                 if response.status != 200:
-                    self.logger.warning(f"Post failed: {(await response.text())[:50]}...")
+                    self.logger.warning(f"Post failed: {(await response.text())[:400]}...")
                 else:
                     self.logger.info(f"Successfully posted data to webserver")
 
